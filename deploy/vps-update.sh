@@ -100,8 +100,16 @@ trap 'rm -rf "$TMP"' EXIT
 BASE="https://github.com/${REPO}/releases/download/${TAG}"
 
 echo "installing ${TAG} (${ASSET}) from ${REPO}"
-curl -fsSL --retry 3 --retry-delay 2 -o "${TMP}/${ASSET}" "${BASE}/${ASSET}"
-curl -fsSL --retry 3 --retry-delay 2 -o "${TMP}/SHA256SUMS" "${BASE}/SHA256SUMS"
+if ! curl -fsSL --retry 3 --retry-delay 2 -o "${TMP}/${ASSET}" "${BASE}/${ASSET}"; then
+  echo "release ${TAG} has no ${ASSET} asset — nothing changed" >&2
+  exit 1
+fi
+# Releases cut before the checksum step was added have no SHA256SUMS: refuse rather than install blind.
+if ! curl -fsSL --retry 3 --retry-delay 2 -o "${TMP}/SHA256SUMS" "${BASE}/SHA256SUMS"; then
+  echo "release ${TAG} does not publish SHA256SUMS — refusing to install an unverified binary" >&2
+  echo "nothing changed (still on ${CURRENT})" >&2
+  exit 1
+fi
 
 # Verify BEFORE touching the installed binary.
 ( cd "$TMP" && grep " ${ASSET}\$" SHA256SUMS | sha256sum -c - ) \

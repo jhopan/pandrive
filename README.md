@@ -210,6 +210,18 @@ Environment overrides: `GITHUB_REPO`, `INSTALL_DIR` (default `/opt/9drive`), `SE
 The binary embeds the frontend, so one release updates UI and API together. This replaced the old
 manual `scp` + restart flow.
 
+Releases cut before checksums existed have no `SHA256SUMS`; the updater refuses those rather than
+installing an unverified binary (`nothing changed`).
+
+Prefer zero-touch updates? The repo ships an optional timer:
+
+```bash
+sudo cp deploy/pandrive-update.service deploy/pandrive-update.timer /etc/systemd/system/
+sudo systemctl enable --now pandrive-update.timer   # runs daily, updates only when a new tag exists
+```
+
+Leave it disabled if you want to choose exactly when the service restarts.
+
 ## Security
 
 - Every response carries `Content-Security-Policy` (`default-src 'self'`, hashed inline bootstrap script, `object-src 'none'`, `frame-ancestors 'none'`), computed from the embedded SPA shell so a rebuilt frontend cannot silently break it.

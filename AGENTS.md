@@ -596,3 +596,9 @@ The VPS installs and updates **from GitHub Releases** (`deploy/vps-update.sh`, i
 - `-deploy` suffixed versions (from the old scp flow) are treated as equal to the matching tag.
 - The binary embeds the frontend, so a release updates UI and API together.
 - `--version` in `main.go` prints the build version and is what the updater reads.
+- Releases without `SHA256SUMS` are refused (installed version stays untouched).
+- Optional zero-touch schedule: `deploy/pandrive-update.service` + `.timer` (daily), disabled unless the
+  operator enables the timer.
+- Never probe an installed binary by executing it to read its version — a pre-`--version` build boots,
+  runs migrations and can create a second database under a different CWD. Read
+  `/opt/9drive/.installed-version` (written on success) or the service log instead.
