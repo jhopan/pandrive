@@ -2735,6 +2735,11 @@ func tunnelConfigPath() string {
 }
 
 func main() {
+	// --version is what deploy/vps-update.sh reads to decide if an update is needed.
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Println(buildVersion)
+		return
+	}
 	config := loadConfig()
 	// Ensure the data directory exists (SQLite cannot create parent dirs).
 	if dir := dataDirFromURL(config.DatabaseURL); dir != "" {

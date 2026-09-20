@@ -47,8 +47,14 @@ jobs:
             GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "release/pandrive-${GOOS}-${GOARCH}${SUFFIX}" .
           done
 
+      - name: Checksums
+        working-directory: backend-go/release
+        run: sha256sum pandrive-* > SHA256SUMS && cat SHA256SUMS
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          files: backend-go/release/pandrive-*
+          files: |
+            backend-go/release/pandrive-*
+            backend-go/release/SHA256SUMS
           generate_release_notes: true

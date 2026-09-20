@@ -584,3 +584,15 @@ only, grouped Files / Cleanup / System / Accounts with an internally scrolling `
 rejects an unchanged password, revokes every other session and returns a fresh session pair;
 `PUT /auth/me` refuses a `password` field (`USE_CHANGE_PASSWORD`) so a stolen access token cannot rotate
 it. Both outcomes are audited (`password_change`, `password_change_failed`).
+
+### 🚀 Deployment: GitHub Releases, not scp
+
+The VPS installs and updates **from GitHub Releases** (`deploy/vps-update.sh`, installed as
+`/usr/local/bin/pandrive-update`). Do not scp binaries by hand anymore.
+
+- Tagging `v*` triggers `.github/workflows/release.yml`, which builds six binaries **and** `SHA256SUMS`.
+- `pandrive-update` verifies the sha256 from `SHA256SUMS` before replacing anything, keeps the previous
+  binary as `.prev`, restarts systemd, health-checks `/health`, and rolls back if the new build fails.
+- `-deploy` suffixed versions (from the old scp flow) are treated as equal to the matching tag.
+- The binary embeds the frontend, so a release updates UI and API together.
+- `--version` in `main.go` prints the build version and is what the updater reads.

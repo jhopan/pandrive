@@ -185,6 +185,31 @@ https://drive.renunganbot.qzz.io/connected-accounts/google/callback
 - Startup log lines: `up to date (v0.6.0)` or `UPDATE AVAILABLE: v0.5.0 -> v0.6.0 (<url>)`.
 - Override the repo with `UPDATE_REPO=owner/name`; disable with `UPDATE_CHECK=off`.
 
+## Updating a server from GitHub Releases
+
+No scp, no building on your laptop — the server pulls the release itself:
+
+```bash
+# install once
+sudo install -m 755 deploy/vps-update.sh /usr/local/bin/pandrive-update
+
+pandrive-update --check        # installed vs latest, changes nothing
+pandrive-update                # install the latest release
+pandrive-update --version v0.19.0
+pandrive-update --list         # recent releases
+```
+
+The script downloads the `pandrive-linux-<arch>` asset plus the release's `SHA256SUMS`, verifies the
+checksum **before** touching the installed binary, keeps the previous binary as
+`pandrive-linux-amd64.prev`, swaps atomically, restarts the systemd unit, then health-checks
+`/health` for up to 20 s and rolls back automatically if the new build does not come up.
+
+Environment overrides: `GITHUB_REPO`, `INSTALL_DIR` (default `/opt/9drive`), `SERVICE` (default
+`9drive`), `HEALTH_URL`, `GITHUB_TOKEN` (private repos / API rate limits).
+
+The binary embeds the frontend, so one release updates UI and API together. This replaced the old
+manual `scp` + restart flow.
+
 ## Security
 
 - Every response carries `Content-Security-Policy` (`default-src 'self'`, hashed inline bootstrap script, `object-src 'none'`, `frame-ancestors 'none'`), computed from the embedded SPA shell so a rebuilt frontend cannot silently break it.
