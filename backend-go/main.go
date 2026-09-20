@@ -182,6 +182,9 @@ func loadConfig() Config {
 	}
 }
 
+// processStartedAt powers the uptime reported by /system/health.
+var processStartedAt = time.Now()
+
 func (a *App) migrate() error {
 	_, err := a.DB.Exec(`
 PRAGMA foreign_keys = ON;
@@ -277,6 +280,13 @@ CREATE TABLE IF NOT EXISTS activity_log (
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS activity_log_user_time_idx ON activity_log(user_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS share_links (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, file_id TEXT NOT NULL, connected_account_id TEXT NOT NULL,
+  provider_file_id TEXT NOT NULL, permission_id TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '',
+  revoked_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS share_links_user_idx ON share_links(user_id, revoked_at);
 CREATE INDEX IF NOT EXISTS activity_log_action_idx ON activity_log(user_id, action);
 `)
 	return err
@@ -506,6 +516,13 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("GET /files/{id}/download", a.requireAuth(a.downloadFile))
 	mux.HandleFunc("POST /files/{id}/share", a.requireAuth(a.shareFileUrl))
 	mux.HandleFunc("POST /files/{id}/public-permission", a.requireAuth(a.publicPermission))
+	mux.HandleFunc("POST /files/{id}/public-link", a.requireAuth(a.publicPermission))
+	mux.HandleFunc("GET /shares", a.requireAuth(a.listShares))
+	mux.HandleFunc("DELETE /shares/{id}", a.requireAuth(a.revokeShare))
+	mux.HandleFunc("GET /uploads/queue", a.requireAuth(a.uploadQueue))
+	mux.HandleFunc("POST /uploads/queue/{id}/cancel", a.requireAuth(a.cancelUpload))
+	mux.HandleFunc("DELETE /uploads/queue/{id}", a.requireAuth(a.removeUploadRecord))
+	mux.HandleFunc("GET /system/health", a.requireAuth(a.systemHealth))
 	mux.HandleFunc("POST /files/batch-download", a.requireAuth(a.batchDownloadZip))
 	mux.HandleFunc("GET /files/duplicates", a.requireAuth(a.findDuplicates))
 	mux.HandleFunc("GET /storage/analyzer", a.requireAuth(a.storageAnalyzer))
@@ -2364,13 +2381,364 @@ func (a *App) viewFileUrl(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) shareFileUrl(w http.ResponseWriter, r *http.Request) {
-	// Future: generate signed URL or public link
+	// Internal viewer URL. Public Drive links come from publicPermission below.
 	writeJSON(w, http.StatusOK, map[string]string{"url": a.Config.FrontendURL + "/files/" + r.PathValue("id")})
 }
 
+// driveWebViewLink asks Drive for the canonical shareable URL of a file.
+func (a *App) driveWebViewLink(ctx context.Context, accountID, providerFileID string) string {
+	accessToken, err := a.getGoogleToken(ctx, accountID, false)
+	if err != nil {
+		return ""
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.GoogleDriveAPIURL+"/files/"+url.PathEscape(providerFileID)+"?fields=webViewLink", nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := a.HTTPClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<15))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ""
+	}
+	var out struct {
+		WebViewLink string `json:"webViewLink"`
+	}
+	_ = json.Unmarshal(body, &out)
+	if out.WebViewLink == "" {
+		return "https://drive.google.com/file/d/" + providerFileID + "/view"
+	}
+	return out.WebViewLink
+}
+
+// publicPermission grants anyone-with-the-link read access in Google Drive and records the share.
 func (a *App) publicPermission(w http.ResponseWriter, r *http.Request) {
-	// Future: Google Drive API permissions insert
-	writeJSON(w, http.StatusOK, map[string]string{"url": "https://drive.google.com/open?id=not_implemented_yet"})
+	user := r.Context().Value(userKey).(authUser)
+	fileID := r.PathValue("id")
+
+	var providerFileID, accountID, name string
+	var size int64
+	err := a.DB.QueryRow(`SELECT provider_file_id,connected_account_id,name,size_bytes FROM files WHERE id=? AND user_id=? AND status='active'`, fileID, user.ID).Scan(&providerFileID, &accountID, &name, &size)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "FILE_NOT_FOUND", "File not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "SHARE_FAILED", "Unable to load file.")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	accessToken, err := a.getGoogleToken(ctx, accountID, false)
+	if err != nil {
+		writeError(w, 500, "SHARE_FAILED", "Unable to read account token.")
+		return
+	}
+
+	payload, _ := json.Marshal(map[string]any{"role": "reader", "type": "anyone"})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.GoogleDriveAPIURL+"/files/"+url.PathEscape(providerFileID)+"/permissions?fields=id", bytes.NewReader(payload))
+	if err != nil {
+		writeError(w, 500, "SHARE_FAILED", "Unable to build Drive request.")
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.HTTPClient.Do(req)
+	if err != nil {
+		writeError(w, 502, "SHARE_FAILED", "Drive request failed.")
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<15))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		writeError(w, 502, "SHARE_FAILED", fmt.Sprintf("Drive rejected the share (%d): %s", resp.StatusCode, string(body)))
+		return
+	}
+	var perm struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(body, &perm)
+
+	link := a.driveWebViewLink(ctx, accountID, providerFileID)
+	shareID := randomID()
+	if _, err := a.DB.Exec(`INSERT INTO share_links (id,user_id,file_id,connected_account_id,provider_file_id,permission_id,url) VALUES (?,?,?,?,?,?,?)`,
+		shareID, user.ID, fileID, accountID, providerFileID, perm.ID, link); err != nil {
+		writeError(w, 500, "SHARE_FAILED", "Link created in Drive but could not be saved locally.")
+		return
+	}
+	a.logActivity(r, user.ID, accountID, "file_share", "file", fileID, name, size, "Public link created")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "url": link, "shareId": shareID})
+}
+
+// listShares returns active public links.
+func (a *App) listShares(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	rows, err := a.DB.Query(`SELECT s.id,s.url,COALESCE(s.created_at,''),f.id,f.name,f.size_bytes,COALESCE(f.mime_type,''),COALESCE(c.email,'')
+		FROM share_links s
+		JOIN files f ON f.id=s.file_id
+		LEFT JOIN connected_accounts c ON c.id=s.connected_account_id
+		WHERE s.user_id=? AND s.revoked_at IS NULL
+		ORDER BY s.id DESC`, user.ID)
+	if err != nil {
+		writeError(w, 500, "SHARES_FAILED", "Unable to list shares: "+err.Error())
+		return
+	}
+	defer rows.Close()
+	shares := []map[string]any{}
+	for rows.Next() {
+		var id, link, createdAt, fileID, name, mimeType, email string
+		var size int64
+		if err := rows.Scan(&id, &link, &createdAt, &fileID, &name, &size, &mimeType, &email); err != nil {
+			writeError(w, 500, "SHARES_FAILED", "Unable to read shares.")
+			return
+		}
+		shares = append(shares, map[string]any{"id": id, "url": link, "createdAt": createdAt, "fileId": fileID, "name": name, "sizeBytes": fmt.Sprint(size), "mimeType": mimeType, "accountEmail": email})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"shares": shares, "total": len(shares)})
+}
+
+// revokeShare removes the public permission in Drive and marks the record revoked.
+func (a *App) revokeShare(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	shareID := r.PathValue("id")
+	var accountID, providerFileID, permissionID, fileID, name string
+	err := a.DB.QueryRow(`SELECT s.connected_account_id,s.provider_file_id,s.permission_id,s.file_id,COALESCE(f.name,'') FROM share_links s LEFT JOIN files f ON f.id=s.file_id WHERE s.id=? AND s.user_id=? AND s.revoked_at IS NULL`, shareID, user.ID).Scan(&accountID, &providerFileID, &permissionID, &fileID, &name)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "Share not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "REVOKE_FAILED", "Unable to load share.")
+		return
+	}
+
+	if permissionID != "" {
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+		accessToken, err := a.getGoogleToken(ctx, accountID, false)
+		if err == nil {
+			req, err := http.NewRequestWithContext(ctx, http.MethodDelete, a.GoogleDriveAPIURL+"/files/"+url.PathEscape(providerFileID)+"/permissions/"+url.PathEscape(permissionID), nil)
+			if err == nil {
+				req.Header.Set("Authorization", "Bearer "+accessToken)
+				if resp, err := a.HTTPClient.Do(req); err == nil {
+					resp.Body.Close()
+				}
+			}
+		}
+	}
+	_, _ = a.DB.Exec(`UPDATE share_links SET revoked_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`, shareID, user.ID)
+	a.logActivity(r, user.ID, accountID, "file_unshare", "file", fileID, name, 0, "Public link revoked")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// uploadQueue lists resumable-upload sessions so stuck or failed uploads can be seen.
+func (a *App) uploadQueue(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	where := "WHERE u.user_id=?"
+	args := []any{user.ID}
+	if status != "" && status != "all" {
+		where += " AND u.status=?"
+		args = append(args, status)
+	}
+	rows, err := a.DB.Query(`SELECT u.id,u.file_name,u.mime_type,u.size_bytes,u.status,COALESCE(u.error_message,''),COALESCE(u.created_at,''),COALESCE(u.completed_at,''),
+		COALESCE(c.email,''),COALESCE(d.name,''),CASE WHEN COALESCE(u.google_session_uri,'')='' THEN 0 ELSE 1 END
+		FROM upload_sessions u
+		LEFT JOIN connected_accounts c ON c.id=u.target_connected_account_id
+		LEFT JOIN folders d ON d.id=u.folder_id
+		`+where+` ORDER BY u.id DESC LIMIT 200`, args...)
+	if err != nil {
+		writeError(w, 500, "QUEUE_FAILED", "Unable to read upload queue: "+err.Error())
+		return
+	}
+	defer rows.Close()
+	items := []map[string]any{}
+	counts := map[string]int{}
+	for rows.Next() {
+		var id, fileName, mimeType, status2, errorMsg, createdAt, completedAt, email, folder string
+		var size int64
+		var resumable int
+		if err := rows.Scan(&id, &fileName, &mimeType, &size, &status2, &errorMsg, &createdAt, &completedAt, &email, &folder, &resumable); err != nil {
+			writeError(w, 500, "QUEUE_FAILED", "Unable to read upload queue.")
+			return
+		}
+		counts[status2]++
+		items = append(items, map[string]any{"id": id, "fileName": fileName, "mimeType": mimeType, "sizeBytes": fmt.Sprint(size),
+			"status": status2, "error": errorMsg, "createdAt": createdAt, "completedAt": completedAt,
+			"accountEmail": email, "folder": folder, "resumable": resumable == 1})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "counts": counts, "total": len(items)})
+}
+
+// cancelUpload marks a queued upload as cancelled. Google keeps the session until it expires,
+// but PanDrive stops tracking and resuming it.
+func (a *App) cancelUpload(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	id := r.PathValue("id")
+	res, err := a.DB.Exec(`UPDATE upload_sessions SET status='cancelled' WHERE id=? AND user_id=? AND status IN ('uploading','pending','in_progress')`, id, user.ID)
+	if err != nil {
+		writeError(w, 500, "CANCEL_FAILED", "Unable to cancel upload.")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeError(w, http.StatusBadRequest, "NOT_CANCELLABLE", "Only pending or in-progress uploads can be cancelled.")
+		return
+	}
+	var fileName, accountID string
+	var size int64
+	_ = a.DB.QueryRow(`SELECT file_name,COALESCE(target_connected_account_id,''),size_bytes FROM upload_sessions WHERE id=?`, id).Scan(&fileName, &accountID, &size)
+	a.logActivity(r, user.ID, accountID, "upload_cancel", "upload", id, fileName, size, "Upload cancelled")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+}
+
+// removeUploadRecord deletes a finished queue entry (never a running one).
+func (a *App) removeUploadRecord(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	id := r.PathValue("id")
+	res, err := a.DB.Exec(`DELETE FROM upload_sessions WHERE id=? AND user_id=? AND status IN ('completed','failed','cancelled')`, id, user.ID)
+	if err != nil {
+		writeError(w, 500, "REMOVE_FAILED", "Unable to remove upload record.")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeError(w, http.StatusBadRequest, "NOT_REMOVABLE", "Only completed, failed or cancelled uploads can be removed.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// systemHealth reports the operational state: version, uptime, backup freshness, tunnel mode,
+// per-account token/sync status and OAuth config quota usage.
+func (a *App) systemHealth(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+
+	dbPath := dbFilePathFromURL(a.Config.DatabaseURL)
+	dbSize := int64(0)
+	dbWritable := false
+	if dbPath != "" {
+		if st, err := os.Stat(dbPath); err == nil {
+			dbSize = st.Size()
+		}
+		if f, err := os.OpenFile(dbPath, os.O_RDWR, 0o600); err == nil {
+			dbWritable = true
+			f.Close()
+		}
+	}
+	backupPath := dbPath + ".bak"
+	backupAge := int64(-1)
+	backupExists := false
+	if dbPath != "" {
+		if st, err := os.Stat(backupPath); err == nil {
+			backupExists = true
+			backupAge = int64(time.Since(st.ModTime()).Seconds())
+		}
+	}
+	tunnelMode := "off"
+	if os.Getenv("TUNNEL_TOKEN") != "" {
+		tunnelMode = "managed"
+	} else if os.Getenv("TUNNEL_ID") != "" {
+		tunnelMode = "locally-managed"
+	}
+
+	type accountHealth struct {
+		ID             string `json:"id"`
+		Email          string `json:"email"`
+		Status         string `json:"status"`
+		LastError      string `json:"lastError"`
+		TokenExpiresAt string `json:"tokenExpiresAt"`
+		TokenExpiresIn int64  `json:"tokenExpiresInSeconds"`
+		FileCount      int    `json:"fileCount"`
+		UsedBytes      string `json:"usedBytes"`
+		AvailableBytes string `json:"availableBytes"`
+		LastSyncedAt   string `json:"lastSyncedAt"`
+		SyncAge        int64  `json:"syncAgeSeconds"`
+	}
+	accounts := []accountHealth{}
+	rows, err := a.DB.Query(`SELECT c.id,c.email,c.status,COALESCE(c.last_error,''),COALESCE(c.token_expires_at,''),
+		(SELECT COUNT(*) FROM files f WHERE f.connected_account_id=c.id AND f.status='active'),
+		COALESCE(s.used_bytes,0),COALESCE(s.available_bytes,0),COALESCE(s.last_synced_at,'')
+		FROM connected_accounts c LEFT JOIN storage_accounts s ON s.connected_account_id=c.id
+		WHERE c.user_id=? ORDER BY c.email`, user.ID)
+	if err != nil {
+		writeError(w, 500, "HEALTH_FAILED", "Unable to read accounts.")
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ah accountHealth
+		var used, avail int64
+		var expiresAt, syncedAt string
+		if err := rows.Scan(&ah.ID, &ah.Email, &ah.Status, &ah.LastError, &expiresAt, &ah.FileCount, &used, &avail, &syncedAt); err != nil {
+			writeError(w, 500, "HEALTH_FAILED", "Unable to read account health.")
+			return
+		}
+		ah.UsedBytes = fmt.Sprint(used)
+		ah.AvailableBytes = fmt.Sprint(avail)
+		ah.TokenExpiresAt = expiresAt
+		ah.TokenExpiresIn = -1
+		if t, err := time.Parse(time.RFC3339Nano, expiresAt); err == nil {
+			ah.TokenExpiresIn = int64(time.Until(t).Seconds())
+		}
+		ah.LastSyncedAt = syncedAt
+		ah.SyncAge = -1
+		for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05"} {
+			if t, err := time.Parse(layout, syncedAt); err == nil {
+				ah.SyncAge = int64(time.Since(t).Seconds())
+				break
+			}
+		}
+		if ah.LastError == "" && ah.TokenExpiresIn >= 0 && ah.TokenExpiresIn < 300 {
+			ah.LastError = "Access token expiring soon (auto-refreshes on use)"
+		}
+		accounts = append(accounts, ah)
+	}
+
+	type configHealth struct {
+		ID           string `json:"id"`
+		Label        string `json:"label"`
+		Status       string `json:"status"`
+		RequestCount int    `json:"requestCount"`
+		WindowStart  string `json:"windowStart"`
+		LastUsedAt   string `json:"lastUsedAt"`
+	}
+	configs := []configHealth{}
+	crows, err := a.DB.Query(`SELECT p.id,COALESCE(p.label,''),p.status,COALESCE(q.request_count,0),COALESCE(q.window_start,''),COALESCE(p.last_used_at,'')
+		FROM provider_configs p LEFT JOIN provider_config_quota q ON q.provider_config_id=p.id
+		WHERE p.user_id=? AND p.provider='google_drive' ORDER BY p.created_at`, user.ID)
+	if err == nil {
+		defer crows.Close()
+		for crows.Next() {
+			var ch configHealth
+			if crows.Scan(&ch.ID, &ch.Label, &ch.Status, &ch.RequestCount, &ch.WindowStart, &ch.LastUsedAt) == nil {
+				configs = append(configs, ch)
+			}
+		}
+	}
+
+	var totalFiles int
+	var totalBytes, trashRows int64
+	_ = a.DB.QueryRow(`SELECT COUNT(*),COALESCE(SUM(size_bytes),0) FROM files WHERE user_id=? AND status='active'`, user.ID).Scan(&totalFiles, &totalBytes)
+	_ = a.DB.QueryRow(`SELECT COUNT(*) FROM files WHERE user_id=? AND status='deleted'`, user.ID).Scan(&trashRows)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":       buildVersion,
+		"startedAt":     processStartedAt.UTC().Format(time.RFC3339),
+		"uptimeSeconds": int64(time.Since(processStartedAt).Seconds()),
+		"database": map[string]any{
+			"path": dbPath, "sizeBytes": fmt.Sprint(dbSize), "writable": dbWritable,
+			"backupPath": backupPath, "backupExists": backupExists, "backupAgeSeconds": backupAge,
+		},
+		"tunnel": map[string]any{"mode": tunnelMode, "enabled": tunnelMode != "off"},
+		"sync":   map[string]any{"intervalMinutes": 5, "quotaThreshold": 8000, "quotaWindowMax": 10000},
+		"accounts":    accounts,
+		"oauthConfigs": configs,
+		"totals": map[string]any{"files": totalFiles, "bytes": fmt.Sprint(totalBytes), "trashedFiles": trashRows},
+	})
 }
 
 func (a *App) updateFile(w http.ResponseWriter, r *http.Request) {

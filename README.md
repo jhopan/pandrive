@@ -47,6 +47,10 @@ Implemented and tested:
 - `GET /files/duplicates` (same name + size across accounts)
 - `GET /storage/analyzer` (per-account, by-type, largest files)
 - `GET /activity` (`?action=` `?accountId=` `?limit=` `?offset=`) — audit trail
+- `POST /files/{id}/public-link` (create public Drive permission + link)
+- `GET /shares` / `DELETE /shares/{id}` (list / revoke public links)
+- `GET /uploads/queue` (`?status=`) / `POST /uploads/queue/{id}/cancel` / `DELETE /uploads/queue/{id}`
+- `GET /system/health` (runtime, database, backup, tunnel, accounts, OAuth quota)
 - `GET /system/version` (update checker)
 - `POST /upload/resumable`
 - `PUT /upload/resumable/{id}`
@@ -100,6 +104,9 @@ http://localhost:4000/connected-accounts/google/callback
 | **Duplicates** | Finds same-name + same-size files across every account, one-click select of the extra copies, reclaimable bytes total |
 | **Storage** | Analyzer: bytes per account, breakdown by file type, and the 25 largest indexed files |
 | **Activity** | Audit trail: sign-ins (including failed attempts), uploads, downloads, transfers, deletes/restores/purges, syncs and OAuth config changes |
+| **Shared** | Every file with a public link: copy, open or revoke. Revoking removes the Drive permission immediately |
+| **Uploads** | Resumable upload queue: what is running, what finished, what failed, plus cancel and clear |
+| **Health** | Uptime, database size and writability, backup freshness, tunnel mode, per-account token/sync state, OAuth rotation quota |
 | **Transfers** | Move or copy files between two connected accounts **server-side** — Google does the copying, so no bytes pass through this server or your bandwidth |
 | **Quota Tracker** | Storage per account, upload routing mode, OAuth config rotation status |
 | **Settings** | Connect Drive, OAuth config manager, Updates (auto update check), backup/restore, security |

@@ -11,6 +11,9 @@ import { UploadProvider } from '@/context/UploadContext'
 const AllFilesPage = lazy(() => import('@/pages/AllFilesPage').then(({ AllFilesPage }) => ({ default: AllFilesPage })))
 const QuotaTrackerPage = lazy(() => import('@/pages/QuotaTrackerPage').then(({ QuotaTrackerPage }) => ({ default: QuotaTrackerPage })))
 const SettingsPage = lazy(() => import('@/pages/SettingsPage').then(({ SettingsPage }) => ({ default: SettingsPage })))
+const HealthPage = lazy(() => import('@/pages/HealthPage').then(({ HealthPage }) => ({ default: HealthPage })))
+const SharedPage = lazy(() => import('@/pages/SharedPage').then(({ SharedPage }) => ({ default: SharedPage })))
+const UploadsPage = lazy(() => import('@/pages/UploadsPage').then(({ UploadsPage }) => ({ default: UploadsPage })))
 const ActivityPage = lazy(() => import('@/pages/ActivityPage').then(({ ActivityPage }) => ({ default: ActivityPage })))
 const DuplicatesPage = lazy(() => import('@/pages/DuplicatesPage').then(({ DuplicatesPage }) => ({ default: DuplicatesPage })))
 const StoragePage = lazy(() => import('@/pages/StoragePage').then(({ StoragePage }) => ({ default: StoragePage })))
@@ -38,6 +41,9 @@ function App() {
               <Route path="duplicates" element={<DuplicatesPage />} />
               <Route path="storage" element={<StoragePage />} />
               <Route path="activity" element={<ActivityPage />} />
+              <Route path="shared" element={<SharedPage />} />
+              <Route path="uploads" element={<UploadsPage />} />
+              <Route path="health" element={<HealthPage />} />
               <Route path="settings" element={<SettingsPage />} />
             </Route>
           </Route>

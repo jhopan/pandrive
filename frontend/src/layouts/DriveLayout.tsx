@@ -23,6 +23,9 @@ import {
   CopyX,
   BarChart3,
   History,
+  Link2,
+  UploadCloud,
+  HeartPulse,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { BrandLogo } from '@/components/drive/BrandLogo'
@@ -38,6 +41,9 @@ const menu = [
   { label: 'Duplicates', icon: CopyX, href: '/duplicates' },
   { label: 'Storage', icon: BarChart3, href: '/storage' },
   { label: 'Activity', icon: History, href: '/activity' },
+  { label: 'Shared', icon: Link2, href: '/shared' },
+  { label: 'Uploads', icon: UploadCloud, href: '/uploads' },
+  { label: 'Health', icon: HeartPulse, href: '/health' },
   { label: 'Quota Tracker', icon: Gauge, href: '/quota' },
   { label: 'Settings', icon: Settings, href: '/settings' },
 ]
