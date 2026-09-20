@@ -2081,12 +2081,31 @@ func forwardedHost(r *http.Request) string {
 
 // runCloudflared spawns cloudflared (adjacent binary or in PATH) with the given args.
 func runCloudflared(args ...string) {
-	exe := "cloudflared"
-	for _, cand := range []string{"cloudflared.exe", "cloudflared", "./cloudflared.exe", "./cloudflared"} {
+	// exec.Command resolves bare names through PATH, so a sibling binary must be
+	// referenced with an explicit relative/absolute path or it will never be found.
+	exe := ""
+	for _, cand := range []string{"./cloudflared.exe", "./cloudflared"} {
 		if _, err := os.Stat(cand); err == nil {
 			exe = cand
 			break
 		}
+	}
+	if exe == "" {
+		if _, err := exec.LookPath("cloudflared"); err == nil {
+			exe = "cloudflared"
+		} else if self, err := os.Executable(); err == nil {
+			dir := filepath.Dir(self)
+			for _, cand := range []string{filepath.Join(dir, "cloudflared.exe"), filepath.Join(dir, "cloudflared")} {
+				if _, err := os.Stat(cand); err == nil {
+					exe = cand
+					break
+				}
+			}
+		}
+	}
+	if exe == "" {
+		log.Printf("cloudflared not found (looked next to the binary and in PATH); tunnel not started")
+		return
 	}
 	full := append([]string{exe}, args...)
 	log.Printf("starting %s", strings.Join(full, " "))

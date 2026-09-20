@@ -120,6 +120,41 @@ Consequences worth knowing:
 - A "move" leaves the source copy in that account's **Drive trash**, which still counts toward quota. Use **Trash -> Empty Drive trash** to release it.
 - Storage is rebalanced between accounts, not increased.
 
+## Public access (Cloudflare Tunnel)
+
+PanDrive can serve itself publicly without opening any port. Two modes, picked automatically by which env var is set:
+
+| Mode | Env | Where ingress lives |
+|------|-----|---------------------|
+| Managed | `TUNNEL_TOKEN` | Cloudflare dashboard (Zero Trust -> Tunnels -> Public hostnames) |
+| Locally managed | `TUNNEL_ID` | `tunnel.yml` next to the binary |
+
+Working example (verified end to end):
+
+```bash
+# once, on a machine logged in to Cloudflare
+cloudflared tunnel login
+cloudflared tunnel create pandrive
+cloudflared tunnel route dns pandrive drive.renunganbot.qzz.io
+```
+
+Copy the tunnel credentials JSON next to the binary, write `tunnel.yml`, then set `TUNNEL_ID` in `.env`:
+
+```yaml
+tunnel: <tunnel-uuid>
+credentials-file: /opt/9drive/<tunnel-uuid>.json
+ingress:
+  - hostname: drive.renunganbot.qzz.io
+    service: http://127.0.0.1:4000
+  - service: http_status:404
+```
+
+The binary spawns `cloudflared` itself on startup (it looks next to itself, then in `PATH`). The OAuth redirect URL follows the incoming `X-Forwarded-Host`, so no `.env` edit is needed per domain — but the callback must be registered in the Google Cloud console:
+
+```text
+https://drive.renunganbot.qzz.io/connected-accounts/google/callback
+```
+
 ## Update checker
 
 `GET /system/version` compares the running build against the latest GitHub release.
