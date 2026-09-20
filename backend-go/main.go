@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -65,6 +66,7 @@ type App struct {
 	GoogleUploadAPIURL string
 	loginFails         map[string]*loginFail
 	loginMu            sync.Mutex
+	RateMeter          *rateMeter
 }
 
 type loginFail struct {
@@ -541,6 +543,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /uploads/queue/{id}/cancel", a.requireAuth(a.cancelUpload))
 	mux.HandleFunc("DELETE /uploads/queue/{id}", a.requireAuth(a.removeUploadRecord))
 	mux.HandleFunc("GET /system/health", a.requireAuth(a.systemHealth))
+	mux.HandleFunc("GET /system/rate-limits", a.requireAuth(a.rateLimits))
 	mux.HandleFunc("POST /files/batch-download", a.requireAuth(a.batchDownloadZip))
 	mux.HandleFunc("GET /files/duplicates", a.requireAuth(a.findDuplicates))
 	mux.HandleFunc("GET /storage/analyzer", a.requireAuth(a.storageAnalyzer))
@@ -2296,12 +2299,215 @@ func (a *App) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// rateMeter tracks requests per second in a sliding 100-second window.
+// Google allows 10k requests/100s per OAuth client project, so this is the number that
+// actually matters when several accounts share configs.
+type rateMeter struct {
+	mu      sync.Mutex
+	buckets [100]int64
+	stamp   [100]int64 // unix second each bucket belongs to (-1 = empty)
+	peak    int64
+}
+
+func (m *rateMeter) add(n int64) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sec := time.Now().Unix()
+	idx := sec % 100
+	if m.stamp[idx] != sec {
+		m.stamp[idx] = sec
+		m.buckets[idx] = 0
+	}
+	m.buckets[idx] += n
+	if total := m.totalLocked(sec); total > m.peak {
+		m.peak = total
+	}
+}
+
+func (m *rateMeter) totalLocked(nowSec int64) int64 {
+	var total int64
+	for i := range m.buckets {
+		if m.stamp[i] > nowSec-100 {
+			total += m.buckets[i]
+		}
+	}
+	return total
+}
+
+// snapshot returns the current 100s total and per-second counts oldest-first.
+func (m *rateMeter) snapshot() (int64, []int64) {
+	if m == nil {
+		return 0, make([]int64, 100)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	nowSec := time.Now().Unix()
+	history := make([]int64, 100)
+	for i := 0; i < 100; i++ {
+		sec := nowSec - 99 + int64(i)
+		idx := sec % 100
+		if m.stamp[idx] == sec {
+			history[i] = m.buckets[idx]
+		}
+	}
+	total := m.totalLocked(nowSec)
+	if total > m.peak {
+		m.peak = total
+	}
+	return total, history
+}
+
+func (m *rateMeter) peakTotal() int64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.peak
+}
+
+// countingTransport counts every request that leaves the process through a.HTTPClient.
+// The client is only used for Google API calls, so this is the app's real Drive request rate.
+type countingTransport struct {
+	base  http.RoundTripper
+	meter *rateMeter
+}
+
+func (t *countingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.meter.add(1)
+	return t.base.RoundTrip(req)
+}
+
+// rateLimits reports the live request rate and each OAuth config's window state.
+func (a *App) rateLimits(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	total, history := a.RateMeter.snapshot()
+
+	type configState struct {
+		ID             string `json:"id"`
+		Label          string `json:"label"`
+		Status         string `json:"status"`
+		FlowStarts     int    `json:"flowStarts"`
+		WindowStart    string `json:"windowStart"`
+		WindowResetsIn int64  `json:"windowResetsInSeconds"`
+		LastUsedAt     string `json:"lastUsedAt"`
+		Accounts       int    `json:"accounts"`
+	}
+	configs := []configState{}
+	rows, err := a.DB.Query(`SELECT p.id,COALESCE(p.label,''),p.status,COALESCE(q.request_count,0),COALESCE(q.window_start,''),COALESCE(p.last_used_at,''),
+		(SELECT COUNT(*) FROM connected_accounts c WHERE c.provider_config_id=p.id)
+		FROM provider_configs p LEFT JOIN provider_config_quota q ON q.provider_config_id=p.id
+		WHERE p.user_id=? AND p.provider='google_drive' ORDER BY p.created_at`, user.ID)
+	if err != nil {
+		writeError(w, 500, "RATE_LIMITS_FAILED", "Unable to read configs: "+err.Error())
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cs configState
+		var windowStart string
+		if err := rows.Scan(&cs.ID, &cs.Label, &cs.Status, &cs.FlowStarts, &windowStart, &cs.LastUsedAt, &cs.Accounts); err != nil {
+			writeError(w, 500, "RATE_LIMITS_FAILED", "Unable to read configs.")
+			return
+		}
+		cs.WindowStart = windowStart
+		cs.WindowResetsIn = 0
+		for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05"} {
+			if t, err := time.Parse(layout, windowStart); err == nil {
+				if remaining := int64(100 - time.Since(t).Seconds()); remaining > 0 {
+					cs.WindowResetsIn = remaining
+				}
+				break
+			}
+		}
+		configs = append(configs, cs)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"windowSeconds":    100,
+		"limit":            10000,
+		"threshold":        8000,
+		"requestsLast100s": total,
+		"peakLast100s":     a.RateMeter.peakTotal(),
+		"history":          history,
+		"configs":          configs,
+		"notes": []string{
+			"Requests counted are Google API calls made by this server (listings, uploads, downloads, permissions).",
+			"Token refreshes go through the OAuth library's own client and are not included.",
+			"Per-config counters count OAuth connect flows, which is what the automatic config switch keys on.",
+		},
+	})
+}
+
+var (
+	cspOnce   sync.Once
+	cspPolicy string
+)
+
+// contentSecurityPolicy builds a policy that allows exactly what the embedded SPA needs.
+// Inline script hashes are derived from the shipped index.html, so a rebuilt frontend does
+// not silently break the theme bootstrap script.
+func (a *App) contentSecurityPolicy() string {
+	cspOnce.Do(func() {
+		scriptSrc := "'self'"
+		if sub, err := fs.Sub(distFS, "dist"); err == nil {
+			if index, err := fs.ReadFile(sub, "index.html"); err == nil {
+				for _, block := range inlineScriptBlocks(index) {
+					sum := sha256.Sum256(block)
+					scriptSrc += " 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+				}
+			}
+		}
+		cspPolicy = strings.Join([]string{
+			"default-src 'self'",
+			"script-src " + scriptSrc,
+			// Tailwind/React set style attributes dynamically; fonts come from Google.
+			"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+			"font-src 'self' data: https://fonts.gstatic.com",
+			"img-src 'self' data: blob:",
+			"connect-src 'self'",
+			"object-src 'none'",
+			"base-uri 'self'",
+			"form-action 'self'",
+			"frame-ancestors 'none'",
+		}, "; ")
+	})
+	return cspPolicy
+}
+
+// inlineScriptBlocks returns the bodies of attribute-less <script> tags in the SPA shell.
+func inlineScriptBlocks(html []byte) [][]byte {
+	var blocks [][]byte
+	rest := html
+	for {
+		start := bytes.Index(rest, []byte("<script>"))
+		if start < 0 {
+			return blocks
+		}
+		rest = rest[start+len("<script>"):]
+		end := bytes.Index(rest, []byte("</script>"))
+		if end < 0 {
+			return blocks
+		}
+		blocks = append(blocks, rest[:end])
+		rest = rest[end+len("</script>"):]
+	}
+}
+
 func (a *App) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		w.Header().Set("Content-Security-Policy", a.contentSecurityPolicy())
+		// Only advertise HSTS when the request really arrived over TLS (directly or via the tunnel).
+		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		w.Header().Set("Access-Control-Allow-Origin", a.Config.FrontendURL)
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
@@ -2471,7 +2677,11 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
-	app := &App{DB: db, Config: config, HTTPClient: http.DefaultClient, GoogleEndpoint: google.Endpoint, GoogleUserInfoURL: "https://www.googleapis.com/oauth2/v2/userinfo", GoogleDriveAPIURL: "https://www.googleapis.com/drive/v3", GoogleUploadAPIURL: "https://www.googleapis.com/upload/drive/v3/files", loginFails: map[string]*loginFail{}}
+	meter := &rateMeter{}
+	app := &App{DB: db, Config: config, GoogleEndpoint: google.Endpoint, GoogleUserInfoURL: "https://www.googleapis.com/oauth2/v2/userinfo", GoogleDriveAPIURL: "https://www.googleapis.com/drive/v3", GoogleUploadAPIURL: "https://www.googleapis.com/upload/drive/v3/files", loginFails: map[string]*loginFail{}, RateMeter: meter}
+	// Every Google API call made by the app flows through this client, so counting here
+	// yields the real request rate without instrumenting each call site.
+	app.HTTPClient = &http.Client{Transport: &countingTransport{base: http.DefaultTransport, meter: meter}, Timeout: 30 * time.Minute}
 	if err := app.migrate(); err != nil {
 		log.Fatal(err)
 	}

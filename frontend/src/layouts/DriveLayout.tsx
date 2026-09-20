@@ -49,6 +49,7 @@ const menu = [
   { label: 'Shared', icon: Link2, href: '/shared' },
   { label: 'Uploads', icon: UploadCloud, href: '/uploads' },
   { label: 'Health', icon: HeartPulse, href: '/health' },
+  { label: 'Rate Limits', icon: Gauge, href: '/rate-limits' },
   { label: 'Quota Tracker', icon: Gauge, href: '/quota' },
   { label: 'Settings', icon: Settings, href: '/settings' },
 ]

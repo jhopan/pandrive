@@ -24,7 +24,9 @@ func newTestApp(t *testing.T) *App {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	app := &App{DB: db, Config: Config{JWTSecret: "test-secret-long-enough-for-jwt", TokenKey: "12345678901234567890123456789012", FrontendURL: "http://localhost:5173"}, HTTPClient: http.DefaultClient, GoogleEndpoint: google.Endpoint, GoogleUserInfoURL: "https://www.googleapis.com/oauth2/v2/userinfo", GoogleDriveAPIURL: "https://www.googleapis.com/drive/v3", GoogleUploadAPIURL: "https://www.googleapis.com/upload/drive/v3/files", loginFails: map[string]*loginFail{}}
+	// Mirror production wiring so the rate meter and its counting transport are exercised.
+	meter := &rateMeter{}
+	app := &App{DB: db, Config: Config{JWTSecret: "test-secret-long-enough-for-jwt", TokenKey: "12345678901234567890123456789012", FrontendURL: "http://localhost:5173"}, HTTPClient: &http.Client{Transport: &countingTransport{base: http.DefaultTransport, meter: meter}}, RateMeter: meter, GoogleEndpoint: google.Endpoint, GoogleUserInfoURL: "https://www.googleapis.com/oauth2/v2/userinfo", GoogleDriveAPIURL: "https://www.googleapis.com/drive/v3", GoogleUploadAPIURL: "https://www.googleapis.com/upload/drive/v3/files", loginFails: map[string]*loginFail{}}
 	if err := app.migrate(); err != nil {
 		t.Fatal(err)
 	}
