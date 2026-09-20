@@ -28,7 +28,8 @@ Implemented and tested:
 - `POST /auth/refresh`
 - `POST /auth/logout`
 - `GET /auth/me`
-- `PUT /auth/me`
+- `PUT /auth/me` (profile only)
+- `POST /auth/change-password` (requires the current password; signs out other sessions)
 - `GET/POST /system/google-config`
 - `GET /connected-accounts/google/connect-url`
 - `GET /connected-accounts/google/callback`
@@ -190,6 +191,7 @@ https://drive.renunganbot.qzz.io/connected-accounts/google/callback
 - `Strict-Transport-Security` is sent only when the request arrived over TLS (directly or via the tunnel).
 - The policy lists every third-party origin the UI actually loads (iconify, avatar CDNs, cdnjs for the video player, Office/Drive preview frames). Built-in folder icons render from bundled SVG, so no remote icon CDN is required.
 - The service worker deliberately does **not** precache `index.html`: a cached shell would keep enforcing an old CSP/HSTS header long after the server changed it (that is exactly how folder icons stayed blocked after a CSP fix).
+- Changing a password requires the current one (`POST /auth/change-password`); `/auth/me` refuses password changes so a stolen access token cannot lock the owner out. A successful change revokes every other session.
 - Do not commit `.env` or SQLite DB files.
 - Keep backend bound to `127.0.0.1` behind Nginx on VPS.
 - Use HTTPS before exposing outside localhost.

@@ -7,7 +7,6 @@ import {
   LogOut,
   Menu,
   Moon,
-  MoreVertical,
   Search,
   Settings,
   SlidersHorizontal,
@@ -31,27 +30,45 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { BrandLogo } from '@/components/drive/BrandLogo'
+import { ProfileMenu } from '@/components/drive/ProfileMenu'
 import { Input } from '@/components/ui/input'
 import { apiFetch, formatBytes } from '@/lib/api'
 import { useUpload } from '@/context/UploadContext'
-import { clearAuthSession, getStoredUser, updateStoredUser, setAuthSession, type AuthUser } from '@/lib/auth'
+import { clearAuthSession, getStoredUser, updateStoredUser, type AuthUser } from '@/lib/auth'
 import { cn } from '@/lib/utils'
 
-const menu = [
-  { label: 'All Files', icon: FileArchive, href: '/all-files' },
-  { label: 'Starred', icon: Star, href: '/starred' },
-  { label: 'Recent', icon: Clock, href: '/recent' },
-  { label: 'Search', icon: Search, href: '/search' },
-  { label: 'Trash', icon: Trash2, href: '/trash' },
-  { label: 'Duplicates', icon: CopyX, href: '/duplicates' },
-  { label: 'Storage', icon: BarChart3, href: '/storage' },
-  { label: 'Activity', icon: History, href: '/activity' },
-  { label: 'Shared', icon: Link2, href: '/shared' },
-  { label: 'Uploads', icon: UploadCloud, href: '/uploads' },
-  { label: 'Health', icon: HeartPulse, href: '/health' },
-  { label: 'Rate Limits', icon: Gauge, href: '/rate-limits' },
-  { label: 'Quota Tracker', icon: Gauge, href: '/quota' },
-  { label: 'Settings', icon: Settings, href: '/settings' },
+// Grouped so fourteen destinations stay scannable: the sidebar scrolls internally instead of
+// stretching the page, and each group has a small heading.
+const menuGroups: { label: string; items: { label: string; icon: React.ElementType; href: string }[] }[] = [
+  {
+    label: 'Files',
+    items: [
+      { label: 'All Files', icon: FileArchive, href: '/all-files' },
+      { label: 'Starred', icon: Star, href: '/starred' },
+      { label: 'Recent', icon: Clock, href: '/recent' },
+      { label: 'Search', icon: Search, href: '/search' },
+      { label: 'Uploads', icon: UploadCloud, href: '/uploads' },
+    ],
+  },
+  {
+    label: 'Cleanup',
+    items: [
+      { label: 'Trash', icon: Trash2, href: '/trash' },
+      { label: 'Duplicates', icon: CopyX, href: '/duplicates' },
+      { label: 'Storage', icon: BarChart3, href: '/storage' },
+    ],
+  },
+  {
+    label: 'System',
+    items: [
+      { label: 'Activity', icon: History, href: '/activity' },
+      { label: 'Shared', icon: Link2, href: '/shared' },
+      { label: 'Health', icon: HeartPulse, href: '/health' },
+      { label: 'Rate Limits', icon: Gauge, href: '/rate-limits' },
+      { label: 'Quota Tracker', icon: Gauge, href: '/quota' },
+      { label: 'Settings', icon: Settings, href: '/settings' },
+    ],
+  },
 ]
 
 type StorageSummary = {
@@ -116,7 +133,7 @@ function SystemInfoDropdown({ storage }: { storage: any }) {
   )
 }
 
-function Sidebar({ onNavigate, user, storage, breakdown, onLogout, accounts = [] }: { onNavigate?: () => void; user: AuthUser | null; storage: StorageSummary | null; breakdown: StorageBreakdown; onLogout: () => void; accounts?: { id: string; email: string }[] }) {
+function Sidebar({ onNavigate, storage, breakdown, onLogout, accounts = [] }: { onNavigate?: () => void; storage: StorageSummary | null; breakdown: StorageBreakdown; onLogout: () => void; accounts?: { id: string; email: string }[] }) {
   const used = Number(storage?.usedBytes ?? 0)
   const total = Number(storage?.totalBytes ?? 0)
   const progress = total > 0 ? Math.min(100, (used / total) * 100) : 0
@@ -129,45 +146,40 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout, accounts = []
 
 
   return (
-    <aside className="flex h-full w-64 flex-col border-slate-200/60 bg-slate-50/40 backdrop-blur-xl p-4 lg:border-r">
-      <div className="flex items-center gap-2.5 pb-3 pt-1">
+    <aside className="flex h-full w-60 flex-col border-slate-200/60 bg-slate-50/40 backdrop-blur-xl p-3.5 lg:border-r">
+      <div className="flex items-center gap-2.5 px-0.5 pb-2.5 pt-0.5">
         <BrandLogo className="h-8 w-8" />
-        <span className="text-xl font-extrabold tracking-tight bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">PanDrive</span>
+        <span className="text-lg font-extrabold tracking-tight bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">PanDrive</span>
       </div>
 
-      <div className="flex items-center gap-2.5 border-y border-slate-200/60 py-3 my-3">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 text-xs font-bold text-white shadow-sm border border-blue-400/20">
-          {(user?.name ?? user?.email ?? 'U').trim().charAt(0).toUpperCase()}
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-[15px] font-bold text-slate-900 leading-none">{user?.name ?? 'User'}</p>
-          <p className="truncate text-xs text-slate-500 mt-1">{user?.email ?? 'Loading...'}</p>
-        </div>
-        <MoreVertical className="h-4 w-4 text-slate-400" />
-      </div>
-
-      <nav className="grid gap-1">
-        {menu.map((item) => (
-          <NavLink key={item.label} to={item.href} onClick={onNavigate} className={({ isActive }) => cn('inline-flex h-10 items-center gap-2.5 rounded-xl px-3.5 text-[13px] font-bold transition-all border border-transparent', isActive ? 'bg-blue-600/10 text-blue-600 border-blue-600/10 shadow-sm' : 'text-slate-600 hover:bg-slate-200/50 hover:text-slate-900')}>
-            <item.icon className="h-4 w-4" />
-            {item.label}
-          </NavLink>
+      {/* User details now live in the header profile menu, which also edits them. */}
+      <nav className="grid min-h-0 flex-1 gap-0.5 overflow-y-auto pr-0.5">
+        {menuGroups.map((group) => (
+          <div key={group.label}>
+            <p className="px-2.5 pb-0.5 pt-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">{group.label}</p>
+            {group.items.map((item) => (
+              <NavLink key={item.label} to={item.href} onClick={onNavigate} className={({ isActive }) => cn('inline-flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-[12.5px] font-semibold transition-colors', isActive ? 'bg-blue-600/10 text-blue-600' : 'text-slate-600 hover:bg-slate-200/50 hover:text-slate-900')}>
+                <item.icon className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">{item.label}</span>
+              </NavLink>
+            ))}
+          </div>
         ))}
         {accounts.length > 0 ? (
-          <>
-            <p className="mt-3 px-3.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">Accounts</p>
+          <div>
+            <p className="px-2.5 pb-0.5 pt-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">Accounts</p>
             {accounts.map((acc) => (
-              <NavLink key={acc.id} to={`/all-files?accountId=${encodeURIComponent(acc.id)}`} onClick={onNavigate} className="inline-flex h-9 items-center gap-2.5 rounded-xl px-3.5 text-[12px] font-semibold text-slate-500 transition-all hover:bg-slate-200/50 hover:text-slate-900 truncate">
+              <NavLink key={acc.id} to={`/all-files?accountId=${encodeURIComponent(acc.id)}`} onClick={onNavigate} className="inline-flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-[12px] font-semibold text-slate-500 transition-colors hover:bg-slate-200/50 hover:text-slate-900">
                 <HardDrive className="h-3.5 w-3.5 shrink-0" />
                 <span className="truncate">{acc.email}</span>
               </NavLink>
             ))}
-          </>
+          </div>
         ) : null}
       </nav>
 
-      <div className="mt-auto border-t border-slate-200/60 pt-4 text-[13px]">
-        <div className="mb-3 space-y-1.5">
+      <div className="mt-2 shrink-0 border-t border-slate-200/60 pt-3 text-[12.5px]">
+        <div className="mb-2 space-y-1">
           {items.map(([label, value, color]) => (
             <div key={label} className="flex items-center justify-between text-slate-500 font-medium">
               <span className="flex items-center gap-1.5"><span className={cn('h-1.5 w-1.5 rounded-full', color)} />{label}</span>
@@ -182,10 +194,10 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout, accounts = []
         <div className="my-2 h-1.5 rounded-full bg-slate-200/60 overflow-hidden">
           <div className="h-full rounded-full bg-blue-600 transition-all duration-300" style={{ width: `${progress}%` }} />
         </div>
-        <Button variant="danger" size="sm" className="mt-3 w-full justify-start h-10 px-3 text-[13px] font-bold" onClick={onLogout}>
+        <Button variant="danger" size="sm" className="mt-2 h-9 w-full justify-start px-3 text-[12.5px] font-bold" onClick={onLogout}>
           <LogOut className="h-4 w-4" />Log Out
         </Button>
-        <p className="mt-2 text-center text-[10px] text-slate-400">
+        <p className="mt-1.5 text-center text-[10px] text-slate-400">
           PanDrive by <a href="https://github.com/jhopan" target="_blank" rel="noopener noreferrer" className="font-semibold hover:underline">JhopanStore</a>
         </p>
       </div>
@@ -219,35 +231,7 @@ export function DriveLayout() {
   const [infoOpen, setInfoOpen] = useState(false)
   const [headerActions, setHeaderActions] = useState<ReactNode>(null)
 
-  const [setupName, setSetupName] = useState('')
-  const [setupEmail, setSetupEmail] = useState('')
-  const [setupPassword, setSetupPassword] = useState('')
-  const [setupError, setSetupError] = useState('')
-  const [setupLoading, setSetupLoading] = useState(false)
-  const isDefaultAdmin = user?.email === 'admin@gmail.com'
 
-  async function handleSetupAdmin(e: FormEvent) {
-    e.preventDefault()
-    setSetupError('')
-    setSetupLoading(true)
-    try {
-      const res = await apiFetch<{ accessToken: string; refreshToken: string; user: AuthUser }>('/auth/me', {
-        method: 'PUT',
-        body: JSON.stringify({ name: setupName, email: setupEmail, password: setupPassword })
-      })
-      if (!res.user || !res.accessToken) {
-        throw new Error('Invalid response from server')
-      }
-      setAuthSession(res.accessToken, res.refreshToken, res.user)
-      setUser(res.user)
-      window.location.reload()
-    } catch (err) {
-      console.error("Setup Admin Error:", err)
-      setSetupError(err instanceof Error ? err.message : 'Failed to update')
-    } finally {
-      setSetupLoading(false)
-    }
-  }
   const { uploadProgress, setUploadProgress, retryFailedUpload, pauseFile, resumeFile } = useUpload()
   const [uploadProgressCollapsed, setUploadProgressCollapsed] = useState(false)
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -419,35 +403,9 @@ export function DriveLayout() {
 
   return (
     <main className="min-h-screen w-full overflow-x-hidden bg-white">
-      {isDefaultAdmin && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-            <h2 className="mb-2 text-xl font-bold text-slate-900">Setup Admin Account</h2>
-            <p className="mb-6 text-sm text-slate-500">Please change the default admin credentials before continuing.</p>
-            {setupError && <div className="mb-4 rounded-xl bg-red-50 p-3 text-sm text-red-600">{setupError}</div>}
-            <form onSubmit={handleSetupAdmin} className="space-y-4">
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">Name</label>
-                <Input value={setupName} onChange={e => setSetupName(e.target.value)} required />
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">Email</label>
-                <Input type="email" value={setupEmail} onChange={e => setSetupEmail(e.target.value)} required />
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">New Password</label>
-                <Input type="password" value={setupPassword} onChange={e => setSetupPassword(e.target.value)} required />
-              </div>
-              <Button type="submit" className="w-full" disabled={setupLoading}>
-                {setupLoading ? 'Saving...' : 'Save & Continue'}
-              </Button>
-            </form>
-          </div>
-        </div>
-      )}
-      <div className="flex min-h-screen w-full flex-col bg-white lg:h-screen lg:overflow-hidden lg:flex-row">
+            <div className="flex min-h-screen w-full flex-col bg-white lg:h-screen lg:overflow-hidden lg:flex-row">
         <div className="hidden lg:block lg:h-screen lg:shrink-0">
-          <Sidebar user={user} storage={storage} breakdown={breakdown} onLogout={logout} accounts={accounts} />
+          <Sidebar storage={storage} breakdown={breakdown} onLogout={logout} accounts={accounts} />
         </div>
         <div className={cn('fixed inset-0 z-40 bg-slate-950/40 transition-opacity lg:hidden', sidebarOpen ? 'opacity-100' : 'pointer-events-none opacity-0')} onClick={() => setSidebarOpen(false)} />
         <div className={cn('fixed inset-y-0 left-0 z-50 transform bg-white shadow-2xl transition-transform duration-300 ease-out lg:hidden', sidebarOpen ? 'translate-x-0' : '-translate-x-full')}>
@@ -456,7 +414,7 @@ export function DriveLayout() {
               <X className="h-5 w-5" />
             </Button>
           </div>
-          <Sidebar user={user} storage={storage} breakdown={breakdown} onLogout={logout} accounts={accounts} onNavigate={() => setSidebarOpen(false)} />
+          <Sidebar storage={storage} breakdown={breakdown} onLogout={logout} accounts={accounts} onNavigate={() => setSidebarOpen(false)} />
         </div>
         <section className="min-w-0 flex-1 p-4 sm:p-6 lg:h-screen lg:overflow-y-auto lg:p-8">
           <header className="flex w-full min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -481,6 +439,7 @@ export function DriveLayout() {
                   </Button>
                   {infoOpen ? <SystemInfoDropdown storage={storage} /> : null}
                 </div>
+                <ProfileMenu user={user} onUserChange={setUser} onLogout={logout} />
               </div>
             </div>
             <div className="relative w-full min-w-0 flex-1 lg:max-w-sm xl:max-w-xl">
@@ -565,6 +524,7 @@ export function DriveLayout() {
                 {!infoOpen ? <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-blue-600" /> : null}
               </Button>
               {infoOpen ? <SystemInfoDropdown storage={storage} /> : null}
+              <ProfileMenu user={user} onUserChange={setUser} onLogout={logout} />
             </div>
           </header>
           <Outlet context={{ setHeaderActions } satisfies DriveLayoutContext} />

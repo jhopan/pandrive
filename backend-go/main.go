@@ -523,6 +523,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /auth/logout", a.requireAuth(a.logout))
 	mux.HandleFunc("GET /auth/me", a.requireAuth(a.me))
 	mux.HandleFunc("PUT /auth/me", a.requireAuth(a.updateMe))
+	mux.HandleFunc("POST /auth/change-password", a.requireAuth(a.changePassword))
 	mux.HandleFunc("GET /system/google-config", a.requireAuth(a.getGoogleConfig))
 	mux.HandleFunc("POST /system/google-config", a.requireAuth(a.saveGoogleConfig))
 	mux.HandleFunc("DELETE /system/google-config/{id}", a.requireAuth(a.deleteGoogleConfig))
@@ -2242,6 +2243,56 @@ func (a *App) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, r.Context().Value(userKey).(authUser))
 }
 
+// changePassword requires the current password, then rotates it and invalidates every
+// existing session (other devices are logged out) while returning a fresh pair for this one.
+func (a *App) changePassword(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	var body struct {
+		CurrentPassword string `json:"currentPassword"`
+		NewPassword     string `json:"newPassword"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body.")
+		return
+	}
+	if body.CurrentPassword == "" {
+		writeError(w, http.StatusBadRequest, "CURRENT_PASSWORD_REQUIRED", "Your current password is required.")
+		return
+	}
+	if len(body.NewPassword) < 8 {
+		writeError(w, http.StatusBadRequest, "WEAK_PASSWORD", "Password must be at least 8 characters.")
+		return
+	}
+	if body.NewPassword == body.CurrentPassword {
+		writeError(w, http.StatusBadRequest, "SAME_PASSWORD", "The new password must differ from the current one.")
+		return
+	}
+
+	var storedHash string
+	if err := a.DB.QueryRow(`SELECT password_hash FROM users WHERE id=? AND status='active'`, user.ID).Scan(&storedHash); err != nil {
+		writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Account not found.")
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(body.CurrentPassword)) != nil {
+		a.logActivity(r, user.ID, "", "password_change_failed", "user", user.ID, user.Email, 0, "Current password did not match")
+		writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Your current password is incorrect.")
+		return
+	}
+	newHash, err := bcrypt.GenerateFromPassword([]byte(body.NewPassword), 10)
+	if err != nil {
+		writeError(w, 500, "HASH_FAILED", "Unable to update the password.")
+		return
+	}
+	if _, err := a.DB.Exec(`UPDATE users SET password_hash=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, newHash, user.ID); err != nil {
+		writeError(w, 500, "UPDATE_FAILED", "Unable to update the password.")
+		return
+	}
+	// Every other session becomes invalid the moment the password changes.
+	_, _ = a.DB.Exec(`UPDATE user_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL`, time.Now().UTC().Format(time.RFC3339Nano), user.ID)
+	a.logActivity(r, user.ID, "", "password_change", "user", user.ID, user.Email, 0, "Password changed; other sessions signed out")
+	a.respondSession(w, http.StatusOK, user)
+}
+
 func (a *App) updateMe(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
 	var body struct {
@@ -2253,29 +2304,17 @@ func (a *App) updateMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Name and email are required.")
 		return
 	}
+	// Password changes are deliberately NOT accepted here: without the current password this route
+	// would let a stolen access token rotate the password and lock the owner out. Use /auth/change-password.
 	if body.Password != "" {
-		if len(body.Password) < 8 {
-			writeError(w, http.StatusBadRequest, "WEAK_PASSWORD", "Password must be at least 8 characters.")
-			return
-		}
-		hash, _ := bcrypt.GenerateFromPassword([]byte(body.Password), 10)
-		_, err := a.DB.Exec(`UPDATE users SET name=?, email=?, password_hash=? WHERE id=?`, body.Name, body.Email, hash, user.ID)
-		if err != nil {
-			writeError(w, http.StatusConflict, "EMAIL_IN_USE", "Email already in use.")
-			return
-		}
-	} else {
-		_, err := a.DB.Exec(`UPDATE users SET name=?, email=? WHERE id=?`, body.Name, body.Email, user.ID)
-		if err != nil {
-			writeError(w, http.StatusConflict, "EMAIL_IN_USE", "Email already in use.")
-			return
-		}
+		writeError(w, http.StatusBadRequest, "USE_CHANGE_PASSWORD", "Use the change-password endpoint to set a new password.")
+		return
 	}
-	detail := "Profile updated"
-	if body.Password != "" {
-		detail = "Profile and password updated"
+	if _, err := a.DB.Exec(`UPDATE users SET name=?, email=? WHERE id=?`, body.Name, body.Email, user.ID); err != nil {
+		writeError(w, http.StatusConflict, "EMAIL_IN_USE", "Email already in use.")
+		return
 	}
-	a.logActivity(r, user.ID, "", "account_update", "user", user.ID, body.Email, 0, detail)
+	a.logActivity(r, user.ID, "", "account_update", "user", user.ID, body.Email, 0, "Profile updated")
 	user.Name = body.Name
 	user.Email = body.Email
 	a.respondSession(w, http.StatusOK, user)
