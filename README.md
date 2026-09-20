@@ -36,10 +36,15 @@ Implemented and tested:
 - `GET /storage/summary`
 - `POST /sync/quota`
 - `POST /sync/files`
-- `GET /files`
+- `GET /files` (`?accountId=` `?folderId=` `?q=` `?status=deleted`)
+- `POST /files/{id}/transfer` (server-side cross-account move/copy)
+- `POST /files/{id}/restore`
+- `POST /files/{id}/purge`
 - `GET /folders`
 - `POST /folders`
+- `POST /connected-accounts/{id}/empty-trash`
 - `GET /files/{id}/download`
+- `GET /system/version` (update checker)
 - `POST /upload/resumable`
 - `PUT /upload/resumable/{id}`
 - `GET /upload/resumable/{id}`
@@ -81,6 +86,45 @@ http://localhost:4000/connected-accounts/google/callback
 
 4. Register/login to PanDrive.
 5. Save Client ID and Client Secret through Settings UI.
+
+## Menus
+
+| Menu | What it does |
+|------|--------------|
+| **All Files** | Every synced file across all connected accounts; upload, rename, move, ZIP batch download, per-account filter |
+| **Account Files** | Same view scoped to one account (click an account in the sidebar) |
+| **Trash** | Locally deleted files (restorable) plus permanent delete and **Empty Drive trash** per account to actually free quota |
+| **Transfers** | Move or copy files between two connected accounts **server-side** — Google does the copying, so no bytes pass through this server or your bandwidth |
+| **Quota Tracker** | Storage per account, upload routing mode, OAuth config rotation status |
+| **Settings** | Connect Drive, OAuth config manager, Updates (auto update check), backup/restore, security |
+
+### Transfers (server-side move)
+
+Select files in **All Files** -> **Transfer** -> pick the destination account (and optionally "move", which deletes the source copy).
+
+```text
+PanDrive -> Drive API: share source file with the destination account (1 request)
+         -> Drive API: copy using the destination account token (server-side in Google)
+         -> revoke the temporary share
+         -> optionally trash the source file
+```
+
+Consequences worth knowing:
+
+- Your internet bandwidth is untouched; the file never downloads or uploads through PanDrive.
+- The file needs **free space in the destination account** during the copy (it exists twice briefly).
+- A "move" leaves the source copy in that account's **Drive trash**, which still counts toward quota. Use **Trash -> Empty Drive trash** to release it.
+- Storage is rebalanced between accounts, not increased.
+
+## Update checker
+
+`GET /system/version` compares the running build against the latest GitHub release.
+
+- Checked automatically at startup, every 12 hours, and whenever Settings is opened.
+- Cached for 6 hours; `?refresh=1` forces a re-check.
+- Picks the correct release asset for the host OS/arch.
+- Startup log lines: `up to date (v0.6.0)` or `UPDATE AVAILABLE: v0.5.0 -> v0.6.0 (<url>)`.
+- Override the repo with `UPDATE_REPO=owner/name`; disable with `UPDATE_CHECK=off`.
 
 ## Security
 
