@@ -121,8 +121,16 @@ func TestContentSecurityPolicyAllowsInlinedBootstrap(t *testing.T) {
 	if !strings.Contains(policy, "object-src 'none'") || !strings.Contains(policy, "frame-ancestors 'none'") {
 		t.Fatalf("policy missing hardening directives: %s", policy)
 	}
-	if !strings.Contains(policy, "https://fonts.gstatic.com") {
-		t.Fatalf("policy must allow the font CDN used by the UI: %s", policy)
+	// Origins the UI actually loads. A too-strict policy broke every remote image (folder icons
+	// rendered as broken placeholders with naturalWidth 0), so these are asserted explicitly.
+	for _, host := range []string{
+		"https://fonts.gstatic.com", "https://fonts.googleapis.com",
+		"https://api.iconify.design", "https://api.dicebear.com", "https://i.pravatar.cc", "https://www.gravatar.com",
+		"https://cdnjs.cloudflare.com", "https://view.officeapps.live.com", "https://drive.google.com",
+	} {
+		if !strings.Contains(policy, host) {
+			t.Fatalf("policy must allow %s (the UI loads it): %s", host, policy)
+		}
 	}
 	// The hash must match the shipped shell, otherwise the theme script is blocked.
 	blocks := inlineScriptBlocks([]byte("<html><script>a</script><script >b</script></body>"))

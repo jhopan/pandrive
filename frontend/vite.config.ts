@@ -26,8 +26,14 @@ export default defineConfig({
         ],
       },
       workbox: {
-        navigateFallbackDenylist: [/^\/(auth|connected-accounts|files|folders|invites|provider-configs|public|storage|uploads)(\/|$)/],
-        globPatterns: ['**/*.{js,css,html,svg,ico,png,webp,woff2}'],
+        // `html` is deliberately NOT precached: the shell carries security headers (CSP/HSTS) and a
+        // service-worker-cached copy would keep enforcing a stale policy long after the server changed
+        // it (observed: folder icons stayed blocked after a CSP fix because the cached index.html
+        // still had the old header). Serve the document from the network, precache only static assets.
+        navigateFallback: null,
+        navigateFallbackDenylist: [/^\/(auth|connected-accounts|files|folders|invites|provider-configs|public|storage|uploads|api)(\/|$)/],
+        globPatterns: ['**/*.{js,css,svg,ico,png,webp,woff2}'],
+        cleanupOutdatedCaches: true,
       },
     }),
   ],

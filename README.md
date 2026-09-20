@@ -188,6 +188,8 @@ https://drive.renunganbot.qzz.io/connected-accounts/google/callback
 
 - Every response carries `Content-Security-Policy` (`default-src 'self'`, hashed inline bootstrap script, `object-src 'none'`, `frame-ancestors 'none'`), computed from the embedded SPA shell so a rebuilt frontend cannot silently break it.
 - `Strict-Transport-Security` is sent only when the request arrived over TLS (directly or via the tunnel).
+- The policy lists every third-party origin the UI actually loads (iconify, avatar CDNs, cdnjs for the video player, Office/Drive preview frames). Built-in folder icons render from bundled SVG, so no remote icon CDN is required.
+- The service worker deliberately does **not** precache `index.html`: a cached shell would keep enforcing an old CSP/HSTS header long after the server changed it (that is exactly how folder icons stayed blocked after a CSP fix).
 - Do not commit `.env` or SQLite DB files.
 - Keep backend bound to `127.0.0.1` behind Nginx on VPS.
 - Use HTTPS before exposing outside localhost.

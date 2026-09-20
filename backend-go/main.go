@@ -640,6 +640,10 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		var ownerID string
 		if a.DB.QueryRow(`SELECT id FROM users WHERE email=?`, attempted).Scan(&ownerID) == nil {
 			a.logActivity(r, ownerID, "", "login_failed", "user", ownerID, attempted, 0, "Invalid credentials")
+		} else {
+			// No matching account: nothing to attribute the row to, so it is only visible in the
+			// server log. Without this a typo'd email leaves no trace at all.
+			log.Printf("login failed for unknown email %q from %s", attempted, clientIP(r))
 		}
 		writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password.")
 		return
@@ -2480,14 +2484,20 @@ func (a *App) contentSecurityPolicy() string {
 				}
 			}
 		}
+		// Third-party origins the UI genuinely loads, discovered by grepping the frontend for
+		// external URLs: iconify (folder icons), dicebear/pravatar/gravatar (avatars), googleusercontent
+		// (Google account avatars), cdnjs (plyr video player), officeapps + drive (file previews).
+		// A too-strict policy silently breaks all of these: every remote image renders as a broken
+		// placeholder, which is how the folder icons disappeared.
 		cspPolicy = strings.Join([]string{
 			"default-src 'self'",
-			"script-src " + scriptSrc,
-			// Tailwind/React set style attributes dynamically; fonts come from Google.
-			"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+			"script-src " + scriptSrc + " https://cdnjs.cloudflare.com https://www.google.com https://www.gstatic.com",
+			"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com",
 			"font-src 'self' data: https://fonts.gstatic.com",
-			"img-src 'self' data: blob:",
-			"connect-src 'self'",
+			"img-src 'self' data: blob: https://api.iconify.design https://api.dicebear.com https://i.pravatar.cc https://www.gravatar.com https://*.googleusercontent.com https://*.google.com",
+			"media-src 'self' data: blob: https://cdnjs.cloudflare.com",
+			"frame-src 'self' https://view.officeapps.live.com https://drive.google.com https://docs.google.com https://www.google.com",
+			"connect-src 'self' https://api.iconify.design",
 			"object-src 'none'",
 			"base-uri 'self'",
 			"form-action 'self'",

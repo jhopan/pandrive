@@ -1,4 +1,10 @@
-import { Folder } from 'lucide-react'
+import {
+  Archive, Briefcase, BookOpen, Box, Calendar, ChartColumn, Clock, Cloud, CloudDownload, CloudUpload,
+  Code, Database, FileArchive, FileCode, FileImage, FileMusic, FileText, FileVideo, Files, Film, Folder, FolderOpen,
+  Folders, GraduationCap, HardDrive, Headphones, Heart, Image as ImageIcon, Images, Lock, Music, Notebook,
+  Package, Receipt, Rocket, Server, Share2, Shield, Sparkles, Star, Terminal, UserCheck, Users, Video, Wallet,
+  type LucideIcon,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { FolderItem } from '@/data/drive-data'
 
@@ -11,7 +17,11 @@ const legacyColorMap: Record<string, string> = {
 }
 
 export const defaultFolderColor = '#3b82f6'
-export const defaultFolderIconUrl = 'https://api.iconify.design/lucide:folder.svg'
+// Iconify URLs are kept as the stored format (existing rows and the picker use them), but every
+// built-in option resolves to a BUNDLED icon instead of a CDN <img>. Relying on api.iconify.design
+// meant a privacy blocker, offline use or a strict CSP turned every folder into a broken-image
+// placeholder — which is exactly what happened. Only a genuinely custom URL still loads remotely.
+export const defaultFolderIconUrl = ''
 
 export const folderIconOptions = [
   { label: 'Folder', url: defaultFolderIconUrl },
@@ -73,12 +83,86 @@ export function iconUrlWithColor(iconUrl: string, color: string) {
   return `${iconUrl}${separator}color=${encodeURIComponent(color)}`
 }
 
+const localIcons: Record<string, LucideIcon> = {
+  folder: Folder,
+  'folder-open': FolderOpen,
+  folders: Folders,
+  files: Files,
+  'file-text': FileText,
+  'file-image': FileImage,
+  'file-video': FileVideo,
+  'file-music': FileMusic,
+  'file-code': FileCode,
+  'file-archive': FileArchive,
+  briefcase: Briefcase,
+  archive: Archive,
+  cloud: Cloud,
+  'cloud-upload': CloudUpload,
+  'cloud-download': CloudDownload,
+  'hard-drive': HardDrive,
+  database: Database,
+  server: Server,
+  image: ImageIcon,
+  images: Images,
+  video: Video,
+  film: Film,
+  music: Music,
+  headphones: Headphones,
+  code: Code,
+  terminal: Terminal,
+  package: Package,
+  box: Box,
+  'book-open': BookOpen,
+  notebook: Notebook,
+  'graduation-cap': GraduationCap,
+  receipt: Receipt,
+  wallet: Wallet,
+  'chart-column': ChartColumn,
+  calendar: Calendar,
+  clock: Clock,
+  users: Users,
+  'user-check': UserCheck,
+  'share-2': Share2,
+  lock: Lock,
+  shield: Shield,
+  star: Star,
+  heart: Heart,
+  rocket: Rocket,
+  sparkles: Sparkles,
+}
+
+// Resolves an stored icon URL to a bundled icon name, or null when it is a custom remote URL.
+function localIconFor(iconUrl: string): LucideIcon | null {
+  const match = /(?:api\.iconify\.design\/)?(?:lucide:)?([a-z0-9-]+)\.svg/i.exec(iconUrl)
+  if (!match) return null
+  if (!iconUrl.includes('iconify.design') && !iconUrl.startsWith('lucide:')) return null
+  return localIcons[match[1].toLowerCase()] ?? Folder
+}
+
 export function FolderVisual({ folder, className, iconClassName }: { folder: Pick<FolderItem, 'color' | 'iconUrl'>; className?: string; iconClassName?: string }) {
   const color = normalizeFolderColor(folder.color)
   const iconUrl = folder.iconUrl || defaultFolderIconUrl
+  const LocalIcon = iconUrl ? localIconFor(iconUrl) : Folder
+
   return (
     <span className={cn('inline-flex items-center justify-center', className)}>
-      {iconUrl ? <img src={iconUrlWithColor(iconUrl, color)} alt="" className={cn('h-full w-full object-contain', iconClassName)} /> : <Folder className={cn('h-full w-full fill-current stroke-current', iconClassName)} style={{ color }} />}
+      {LocalIcon ? (
+        <LocalIcon className={cn('h-full w-full', iconClassName)} style={{ color }} />
+      ) : (
+        // Custom remote icon: still degrade to a local folder when it cannot load.
+        <img
+          src={iconUrlWithColor(iconUrl, color)}
+          alt=""
+          className={cn('h-full w-full object-contain', iconClassName)}
+          onError={(event) => {
+            const img = event.currentTarget
+            img.style.display = 'none'
+            const sibling = img.nextElementSibling as HTMLElement | null
+            if (sibling) sibling.style.display = 'inline-flex'
+          }}
+        />
+      )}
+      {!LocalIcon ? <Folder className={cn('hidden h-full w-full', iconClassName)} style={{ color }} /> : null}
     </span>
   )
 }
