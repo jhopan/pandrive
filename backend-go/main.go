@@ -2621,8 +2621,12 @@ func (a *App) systemHealth(w http.ResponseWriter, r *http.Request) {
 	dbSize := int64(0)
 	dbWritable := false
 	if dbPath != "" {
-		if st, err := os.Stat(dbPath); err == nil {
-			dbSize = st.Size()
+		// WAL mode keeps recent writes in <db>-wal, so sum the sidecar files too;
+		// reporting only the main file understates the real footprint.
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			if st, err := os.Stat(dbPath + suffix); err == nil {
+				dbSize += st.Size()
+			}
 		}
 		if f, err := os.OpenFile(dbPath, os.O_RDWR, 0o600); err == nil {
 			dbWritable = true
