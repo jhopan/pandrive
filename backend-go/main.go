@@ -531,6 +531,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /files/{id}/public-permission", a.requireAuth(a.publicPermission))
 	mux.HandleFunc("POST /files/{id}/public-link", a.requireAuth(a.publicPermission))
 	mux.HandleFunc("GET /recent", a.requireAuth(a.listRecent))
+	mux.HandleFunc("GET /search", a.requireAuth(a.searchFiles))
 	mux.HandleFunc("GET /starred", a.requireAuth(a.listStarred))
 	mux.HandleFunc("POST /files/{id}/star", a.requireAuth(a.starFile))
 	mux.HandleFunc("POST /folders/{id}/star", a.requireAuth(a.starFolder))
@@ -1287,31 +1288,213 @@ func (a *App) listFolders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"folders": folders})
 }
 
-func (a *App) listFiles(w http.ResponseWriter, r *http.Request) {
-	user := r.Context().Value(userKey).(authUser)
-	folderID := r.URL.Query().Get("folderId")
-	accountID := r.URL.Query().Get("accountId")
-	search := strings.TrimSpace(r.URL.Query().Get("q"))
-	// status=deleted powers the Trash page; default lists active files only.
+// fileKindClause maps a UI "kind" to a mime_type predicate.
+func fileKindClause(kind string) (string, []any) {
+	switch kind {
+	case "image":
+		return `f.mime_type LIKE 'image/%'`, nil
+	case "video":
+		return `f.mime_type LIKE 'video/%'`, nil
+	case "audio":
+		return `f.mime_type LIKE 'audio/%'`, nil
+	case "pdf":
+		return `f.mime_type = 'application/pdf'`, nil
+	case "doc":
+		return `(f.mime_type LIKE 'text/%' OR f.mime_type LIKE 'application/msword%' OR f.mime_type LIKE 'application/vnd.openxmlformats-officedocument%' OR f.mime_type LIKE 'application/vnd.oasis.opendocument%' OR f.mime_type LIKE 'application/rtf%')`, nil
+	case "archive":
+		// Real Drive files use platform-specific types: Windows zips arrive as
+		// application/x-zip-compressed, not application/zip. Match both families.
+		return `(f.mime_type LIKE 'application/zip%' OR f.mime_type LIKE 'application/x-zip%' OR f.mime_type LIKE 'application/x-compressed%' OR f.mime_type LIKE 'application/x-rar%' OR f.mime_type LIKE 'application/vnd.rar%' OR f.mime_type LIKE 'application/x-7z%' OR f.mime_type LIKE 'application/x-tar%' OR f.mime_type LIKE 'application/gzip%' OR f.mime_type LIKE 'application/x-gzip%' OR f.mime_type LIKE 'application/x-bzip%')`, nil
+	case "gapps":
+		// Google-native items (Docs/Sheets/Slides + folders mirrored from Drive) report a
+		// vnd.google-apps.* mime and no size.
+		return `f.mime_type LIKE 'application/vnd.google-apps.%'`, nil
+	case "other":
+		return `NOT (f.mime_type LIKE 'image/%' OR f.mime_type LIKE 'video/%' OR f.mime_type LIKE 'audio/%' OR f.mime_type = 'application/pdf' OR f.mime_type LIKE 'text/%' OR f.mime_type LIKE 'application/msword%' OR f.mime_type LIKE 'application/vnd.openxmlformats-officedocument%' OR f.mime_type LIKE 'application/vnd.oasis.opendocument%' OR f.mime_type LIKE 'application/rtf%' OR f.mime_type LIKE 'application/zip%' OR f.mime_type LIKE 'application/x-zip%' OR f.mime_type LIKE 'application/x-rar%' OR f.mime_type LIKE 'application/x-7z%' OR f.mime_type LIKE 'application/x-tar%' OR f.mime_type LIKE 'application/gzip%' OR f.mime_type LIKE 'application/x-compressed%' OR f.mime_type LIKE 'application/vnd.google-apps.%')`, nil
+	}
+	return "", nil
+}
+
+// fileFilterClause builds the shared WHERE fragment for /files and /search.
+// Extracted so the two endpoints cannot drift: the frontend already sent kind/minSize/
+// maxSize/date filters that /files used to ignore silently.
+func fileFilterClause(r *http.Request, userID string) (string, []any, error) {
 	statusFilter := "active"
 	if r.URL.Query().Get("status") == "deleted" {
 		statusFilter = "deleted"
 	}
-	query := `SELECT f.id,f.name,f.mime_type,f.size_bytes,f.provider_file_id,f.folder_id,f.created_at,f.updated_at,c.id,c.email,c.provider,COALESCE(d.name,''),COALESCE(f.deleted_at,''),COALESCE(f.starred,0) FROM files f JOIN connected_accounts c ON c.id=f.connected_account_id LEFT JOIN folders d ON d.id=f.folder_id WHERE f.user_id=? AND f.status='` + statusFilter + `'`
-	args := []any{user.ID}
-	if folderID != "" {
-		query += ` AND f.folder_id=?`
-		args = append(args, folderID)
+	where := `f.user_id=? AND f.status='` + statusFilter + `'`
+	args := []any{userID}
+
+	if v := strings.TrimSpace(r.URL.Query().Get("folderId")); v != "" {
+		if v == "none" {
+			where += ` AND f.folder_id IS NULL`
+		} else {
+			where += ` AND f.folder_id=?`
+			args = append(args, v)
+		}
 	}
-	if accountID != "" {
-		query += ` AND f.connected_account_id=?`
-		args = append(args, accountID)
+	if v := strings.TrimSpace(r.URL.Query().Get("accountId")); v != "" {
+		where += ` AND f.connected_account_id=?`
+		args = append(args, v)
 	}
-	if search != "" {
-		query += ` AND f.name LIKE ?`
-		args = append(args, "%"+search+"%")
+	if v := strings.TrimSpace(r.URL.Query().Get("q")); v != "" {
+		// Escape LIKE wildcards so a literal % or _ in a filename search stays literal.
+		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(v)
+		where += ` AND f.name LIKE ? ESCAPE '\'`
+		args = append(args, "%"+escaped+"%")
 	}
-	query += ` ORDER BY f.created_at DESC`
+	if clause, _ := fileKindClause(strings.TrimSpace(r.URL.Query().Get("kind"))); clause != "" {
+		where += ` AND ` + clause
+	}
+	if v := strings.TrimSpace(r.URL.Query().Get("minSize")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return "", nil, errors.New("minSize must be an integer")
+		}
+		where += ` AND f.size_bytes >= ?`
+		args = append(args, n)
+	}
+	if v := strings.TrimSpace(r.URL.Query().Get("maxSize")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return "", nil, errors.New("maxSize must be an integer")
+		}
+		where += ` AND f.size_bytes <= ?`
+		args = append(args, n)
+	}
+	// Dates are parsed with datetime() so both stored timestamp formats compare correctly.
+	if v := strings.TrimSpace(r.URL.Query().Get("startDate")); v != "" {
+		where += ` AND datetime(f.created_at) >= datetime(?)`
+		args = append(args, v)
+	}
+	if v := strings.TrimSpace(r.URL.Query().Get("endDate")); v != "" {
+		where += ` AND datetime(f.created_at) <= datetime(?)`
+		args = append(args, v)
+	}
+	switch r.URL.Query().Get("starred") {
+	case "1", "true":
+		where += ` AND f.starred=1`
+	case "0", "false":
+		where += ` AND COALESCE(f.starred,0)=0`
+	}
+	return where, args, nil
+}
+
+// searchFiles is /files with sorting, pagination, totals and facets.
+func (a *App) searchFiles(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	where, args, err := fileFilterClause(r, user.ID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+
+	limit := 50
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 && v <= 500 {
+		limit = v
+	}
+	offset := 0
+	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v >= 0 {
+		offset = v
+	}
+
+	order := "datetime(f.updated_at) DESC"
+	switch r.URL.Query().Get("sort") {
+	case "name":
+		order = "f.name COLLATE NOCASE ASC"
+	case "name_desc":
+		order = "f.name COLLATE NOCASE DESC"
+	case "size":
+		order = "f.size_bytes DESC"
+	case "size_asc":
+		order = "f.size_bytes ASC"
+	case "oldest":
+		order = "datetime(f.created_at) ASC"
+	case "created":
+		order = "datetime(f.created_at) DESC"
+	}
+
+	var total int
+	var totalBytes int64
+	if err := a.DB.QueryRow(`SELECT COUNT(*), COALESCE(SUM(f.size_bytes),0) FROM files f WHERE `+where, args...).Scan(&total, &totalBytes); err != nil {
+		writeError(w, 500, "SEARCH_FAILED", "Unable to count results: "+err.Error())
+		return
+	}
+
+	rows, err := a.DB.Query(`SELECT f.id,f.name,f.mime_type,f.size_bytes,COALESCE(f.created_at,''),COALESCE(f.updated_at,''),
+		COALESCE(c.id,''),COALESCE(c.email,''),COALESCE(d.id,''),COALESCE(d.name,''),f.folder_id,COALESCE(f.starred,0)
+		FROM files f
+		LEFT JOIN connected_accounts c ON c.id=f.connected_account_id
+		LEFT JOIN folders d ON d.id=f.folder_id
+		WHERE `+where+` ORDER BY `+order+` LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	if err != nil {
+		writeError(w, 500, "SEARCH_FAILED", "Unable to search files: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	results := []map[string]any{}
+	for rows.Next() {
+		var id, name, mimeType, createdAt, updatedAt, accountID, email, folderIDOut, folderName string
+		var size int64
+		var starred int
+		var folderID sql.NullString
+		if err := rows.Scan(&id, &name, &mimeType, &size, &createdAt, &updatedAt, &accountID, &email, &folderIDOut, &folderName, &folderID, &starred); err != nil {
+			writeError(w, 500, "SEARCH_FAILED", "Unable to read results.")
+			return
+		}
+		var folder any
+		if folderID.Valid {
+			folder = map[string]string{"id": folderID.String, "name": folderName}
+		}
+		results = append(results, map[string]any{"id": id, "name": name, "mimeType": mimeType, "sizeBytes": fmt.Sprint(size),
+			"createdAt": createdAt, "updatedAt": updatedAt, "starred": starred == 1, "folder": folder,
+			"connectedAccount": map[string]string{"id": accountID, "email": email}})
+	}
+
+	// Facets: per-account and per-kind counts over the SAME filter set (minus their own dimension
+	// would be ideal, but a single pass keeps this cheap and predictable).
+	type facet struct {
+		Key   string `json:"key"`
+		Label string `json:"label"`
+		Count int    `json:"count"`
+	}
+	accountFacets := []facet{}
+	arows, err := a.DB.Query(`SELECT c.id,COALESCE(c.email,''),COUNT(*) FROM files f LEFT JOIN connected_accounts c ON c.id=f.connected_account_id WHERE `+where+` GROUP BY c.id ORDER BY COUNT(*) DESC`, args...)
+	if err == nil {
+		defer arows.Close()
+		for arows.Next() {
+			var f2 facet
+			if arows.Scan(&f2.Key, &f2.Label, &f2.Count) == nil {
+				accountFacets = append(accountFacets, f2)
+			}
+		}
+	}
+	kindFacets := []facet{}
+	for _, kind := range []string{"image", "video", "audio", "pdf", "doc", "archive", "gapps", "other"} {
+		clause, _ := fileKindClause(kind)
+		var n int
+		if err := a.DB.QueryRow(`SELECT COUNT(*) FROM files f WHERE `+where+` AND `+clause, args...).Scan(&n); err == nil && n > 0 {
+			kindFacets = append(kindFacets, facet{Key: kind, Label: kind, Count: n})
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"files": results, "total": total, "limit": limit, "offset": offset,
+		"totalBytes": fmt.Sprint(totalBytes),
+		"facets":     map[string]any{"accounts": accountFacets, "kinds": kindFacets},
+	})
+}
+
+func (a *App) listFiles(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	where, args, err := fileFilterClause(r, user.ID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	query := `SELECT f.id,f.name,f.mime_type,f.size_bytes,f.provider_file_id,f.folder_id,f.created_at,f.updated_at,c.id,c.email,c.provider,COALESCE(d.name,''),COALESCE(f.deleted_at,''),COALESCE(f.starred,0) FROM files f LEFT JOIN connected_accounts c ON c.id=f.connected_account_id LEFT JOIN folders d ON d.id=f.folder_id WHERE ` + where + ` ORDER BY f.created_at DESC`
 	rows, err := a.DB.Query(query, args...)
 	if err != nil {
 		writeError(w, 500, "FILES_FAILED", "Unable to list files.")

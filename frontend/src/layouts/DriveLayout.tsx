@@ -41,6 +41,7 @@ const menu = [
   { label: 'All Files', icon: FileArchive, href: '/all-files' },
   { label: 'Starred', icon: Star, href: '/starred' },
   { label: 'Recent', icon: Clock, href: '/recent' },
+  { label: 'Search', icon: Search, href: '/search' },
   { label: 'Trash', icon: Trash2, href: '/trash' },
   { label: 'Duplicates', icon: CopyX, href: '/duplicates' },
   { label: 'Storage', icon: BarChart3, href: '/storage' },
