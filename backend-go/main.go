@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"embed"
 
 	"context"
@@ -399,6 +400,10 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /files/{id}/share", a.requireAuth(a.shareFileUrl))
 	mux.HandleFunc("POST /files/{id}/public-permission", a.requireAuth(a.publicPermission))
 	mux.HandleFunc("POST /files/batch-download", a.requireAuth(a.batchDownloadZip))
+	mux.HandleFunc("POST /files/{id}/transfer", a.requireAuth(a.transferFile))
+	mux.HandleFunc("POST /files/{id}/restore", a.requireAuth(a.restoreFile))
+	mux.HandleFunc("POST /files/{id}/purge", a.requireAuth(a.purgeFile))
+	mux.HandleFunc("POST /connected-accounts/{id}/empty-trash", a.requireAuth(a.emptyAccountTrash))
 	mux.HandleFunc("PATCH /files/{id}", a.requireAuth(a.updateFile))
 	mux.HandleFunc("DELETE /files/{id}", a.requireAuth(a.deleteFile))
 	mux.HandleFunc("PATCH /files/batch", a.requireAuth(a.batchUpdateFiles))
@@ -944,7 +949,9 @@ func (a *App) updateRoutingPolicy(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) getGoogleToken(ctx context.Context, accountID string, forceRefresh bool) (string, error) {
 	var encryptedToken, encryptedRefresh, expiresAt, configID string
-	err := a.DB.QueryRow(`SELECT access_token_encrypted, refresh_token_encrypted, token_expires_at, provider_config_id FROM connected_accounts WHERE id=?`, accountID).Scan(&encryptedToken, &encryptedRefresh, &expiresAt, &configID)
+	// COALESCE guards NULL columns (a fresh account may not have a provider config yet):
+	// scanning NULL into a string returns a driver error, which used to surface as a confusing failure.
+	err := a.DB.QueryRow(`SELECT COALESCE(access_token_encrypted,''), COALESCE(refresh_token_encrypted,''), COALESCE(token_expires_at,''), COALESCE(provider_config_id,'') FROM connected_accounts WHERE id=?`, accountID).Scan(&encryptedToken, &encryptedRefresh, &expiresAt, &configID)
 	if err != nil {
 		return "", err
 	}
@@ -1130,7 +1137,12 @@ func (a *App) listFiles(w http.ResponseWriter, r *http.Request) {
 	folderID := r.URL.Query().Get("folderId")
 	accountID := r.URL.Query().Get("accountId")
 	search := strings.TrimSpace(r.URL.Query().Get("q"))
-	query := `SELECT f.id,f.name,f.mime_type,f.size_bytes,f.provider_file_id,f.folder_id,f.created_at,f.updated_at,c.id,c.email,c.provider,COALESCE(d.name,'') FROM files f JOIN connected_accounts c ON c.id=f.connected_account_id LEFT JOIN folders d ON d.id=f.folder_id WHERE f.user_id=? AND f.status='active'`
+	// status=deleted powers the Trash page; default lists active files only.
+	statusFilter := "active"
+	if r.URL.Query().Get("status") == "deleted" {
+		statusFilter = "deleted"
+	}
+	query := `SELECT f.id,f.name,f.mime_type,f.size_bytes,f.provider_file_id,f.folder_id,f.created_at,f.updated_at,c.id,c.email,c.provider,COALESCE(d.name,''),COALESCE(f.deleted_at,'') FROM files f JOIN connected_accounts c ON c.id=f.connected_account_id LEFT JOIN folders d ON d.id=f.folder_id WHERE f.user_id=? AND f.status='` + statusFilter + `'`
 	args := []any{user.ID}
 	if folderID != "" {
 		query += ` AND f.folder_id=?`
@@ -1153,18 +1165,18 @@ func (a *App) listFiles(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	files := make([]map[string]any, 0)
 	for rows.Next() {
-		var id, name, mimeType, providerFileID, createdAt, updatedAt, accountID, email, provider, folderName string
+		var id, name, mimeType, providerFileID, createdAt, updatedAt, accountID, email, provider, folderName, deletedAt string
 		var size int64
 		var folderID sql.NullString
-		if err := rows.Scan(&id, &name, &mimeType, &size, &providerFileID, &folderID, &createdAt, &updatedAt, &accountID, &email, &provider, &folderName); err != nil {
-			writeError(w, 500, "FILES_FAILED", "Unable to read files.")
+		if err := rows.Scan(&id, &name, &mimeType, &size, &providerFileID, &folderID, &createdAt, &updatedAt, &accountID, &email, &provider, &folderName, &deletedAt); err != nil {
+			writeError(w, 500, "FILES_FAILED", "Unable to read files: "+err.Error())
 			return
 		}
 		var folder any
 		if folderID.Valid {
 			folder = map[string]string{"id": folderID.String, "name": folderName}
 		}
-		files = append(files, map[string]any{"id": id, "name": name, "mimeType": mimeType, "sizeBytes": fmt.Sprint(size), "providerFileId": providerFileID, "folder": folder, "createdAt": createdAt, "updatedAt": updatedAt, "connectedAccount": map[string]string{"id": accountID, "email": email, "provider": provider}})
+		files = append(files, map[string]any{"id": id, "name": name, "mimeType": mimeType, "sizeBytes": fmt.Sprint(size), "providerFileId": providerFileID, "folder": folder, "createdAt": createdAt, "updatedAt": updatedAt, "deletedAt": deletedAt, "connectedAccount": map[string]string{"id": accountID, "email": email, "provider": provider}})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"files": files})
 }
@@ -2232,6 +2244,281 @@ func (a *App) updateFile(w http.ResponseWriter, r *http.Request) {
 			_, _ = a.DB.Exec(`UPDATE files SET folder_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND status='active'`, *body.FolderID, fileID, user.ID)
 		}
 	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// shareFileForTransfer grants a target account read access to a file in another account.
+// Returns the permission id so it can be revoked after the copy.
+func (a *App) shareFileForTransfer(ctx context.Context, sourceAccountID, providerFileID, targetEmail string) (string, error) {
+	accessToken, err := a.getGoogleToken(ctx, sourceAccountID, false)
+	if err != nil {
+		return "", err
+	}
+	payload, _ := json.Marshal(map[string]any{"role": "reader", "type": "user", "emailAddress": targetEmail})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.GoogleDriveAPIURL+"/files/"+url.PathEscape(providerFileID)+"/permissions?sendNotificationEmail=false&fields=id", bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.HTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("share failed (%d): %s", resp.StatusCode, string(body))
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(body, &out)
+	return out.ID, nil
+}
+
+func (a *App) revokeTransferShare(ctx context.Context, sourceAccountID, providerFileID, permissionID string) {
+	if permissionID == "" {
+		return
+	}
+	accessToken, err := a.getGoogleToken(ctx, sourceAccountID, false)
+	if err != nil {
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, a.GoogleDriveAPIURL+"/files/"+url.PathEscape(providerFileID)+"/permissions/"+url.PathEscape(permissionID), nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if resp, err := a.HTTPClient.Do(req); err == nil {
+		resp.Body.Close()
+	}
+}
+
+// copyFileAsAccount copies a (shared) Drive file into another account using that account's token.
+func (a *App) copyFileAsAccount(ctx context.Context, targetAccountID, providerFileID, name string) (string, error) {
+	accessToken, err := a.getGoogleToken(ctx, targetAccountID, false)
+	if err != nil {
+		return "", err
+	}
+	payload, _ := json.Marshal(map[string]any{"name": name})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.GoogleDriveAPIURL+"/files/"+url.PathEscape(providerFileID)+"/copy?fields=id,name,mimeType,size", bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.HTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("copy failed (%d): %s", resp.StatusCode, string(body))
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil || out.ID == "" {
+		return "", fmt.Errorf("copy returned no file id")
+	}
+	return out.ID, nil
+}
+
+// deleteDriveFile moves a file to the Drive trash (permanent when already trashed).
+func (a *App) deleteDriveFile(ctx context.Context, accountID, providerFileID string) error {
+	accessToken, err := a.getGoogleToken(ctx, accountID, false)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, a.GoogleDriveAPIURL+"/files/"+url.PathEscape(providerFileID), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := a.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil // already gone
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("drive delete failed (%d): %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+// transferFile moves (or copies) a file between two connected accounts server-side:
+// share source -> copy with target token -> revoke share -> optionally delete source.
+// No file bytes ever pass through this server.
+func (a *App) transferFile(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	fileID := r.PathValue("id")
+	var body struct {
+		TargetAccountID string `json:"targetAccountId"`
+		DeleteSource    bool   `json:"deleteSource"`
+	}
+	if err := decodeJSON(r, &body); err != nil || body.TargetAccountID == "" {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "targetAccountId is required.")
+		return
+	}
+
+	var providerFileID, name, mimeType, sourceAccountID string
+	var size int64
+	err := a.DB.QueryRow(`SELECT f.provider_file_id,f.name,f.mime_type,f.size_bytes,f.connected_account_id FROM files f WHERE f.id=? AND f.user_id=? AND f.status='active' AND f.provider='google_drive'`, fileID, user.ID).Scan(&providerFileID, &name, &mimeType, &size, &sourceAccountID)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "FILE_NOT_FOUND", "File not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "TRANSFER_FAILED", "Unable to load file.")
+		return
+	}
+	if sourceAccountID == body.TargetAccountID {
+		writeError(w, http.StatusBadRequest, "SAME_ACCOUNT", "Source and destination account are the same.")
+		return
+	}
+
+	var targetEmail string
+	err = a.DB.QueryRow(`SELECT email FROM connected_accounts WHERE id=? AND user_id=? AND status='connected'`, body.TargetAccountID, user.ID).Scan(&targetEmail)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "ACCOUNT_NOT_FOUND", "Destination account not found.")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+
+	// 1. Share the source file with the destination account (reader).
+	permissionID, err := a.shareFileForTransfer(ctx, sourceAccountID, providerFileID, targetEmail)
+	if err != nil {
+		writeError(w, 502, "TRANSFER_SHARE_FAILED", "Unable to share file with destination account: "+err.Error())
+		return
+	}
+	// 2. Copy it into the destination account (server-side, no bandwidth here).
+	newProviderID, err := a.copyFileAsAccount(ctx, body.TargetAccountID, providerFileID, name)
+	if err != nil {
+		a.revokeTransferShare(ctx, sourceAccountID, providerFileID, permissionID)
+		writeError(w, 502, "TRANSFER_COPY_FAILED", "Unable to copy file to destination account: "+err.Error())
+		return
+	}
+	// 3. Clean up the temporary share.
+	go a.revokeTransferShare(context.Background(), sourceAccountID, providerFileID, permissionID)
+
+	// 4. Record the new file against the destination account.
+	newFileID := randomID()
+	if _, err := a.DB.Exec(`INSERT INTO files (id,user_id,connected_account_id,provider,provider_file_id,name,mime_type,size_bytes) VALUES (?,?,?,?,?,?,?,?)`, newFileID, user.ID, body.TargetAccountID, "google_drive", newProviderID, name, mimeType, size); err != nil {
+		writeError(w, 500, "TRANSFER_SAVE_FAILED", "Copied in Drive but could not save locally.")
+		return
+	}
+
+	// 5. Optional source removal (goes to Drive trash - empty trash to actually free quota).
+	sourceDeleted := false
+	if body.DeleteSource {
+		if err := a.deleteDriveFile(ctx, sourceAccountID, providerFileID); err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"status": "partial", "newFileId": newFileID, "moved": false, "message": "Copied, but deleting the source failed: " + err.Error()})
+			return
+		}
+		_, _ = a.DB.Exec(`UPDATE files SET status='deleted', deleted_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`, fileID, user.ID)
+		sourceDeleted = true
+	}
+
+	// Refresh both accounts' quota in the background (2 API calls).
+	go func() {
+		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = a.syncAccountQuota(c, sourceAccountID)
+		_ = a.syncAccountQuota(c, body.TargetAccountID)
+	}()
+
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "newFileId": newFileID, "moved": sourceDeleted, "sourceInTrash": sourceDeleted})
+}
+
+// restoreFile undoes a local (soft) delete. The Drive file was never removed by a local delete.
+func (a *App) restoreFile(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	fileID := r.PathValue("id")
+	res, err := a.DB.Exec(`UPDATE files SET status='active', deleted_at=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND status='deleted'`, fileID, user.ID)
+	if err != nil {
+		writeError(w, 500, "RESTORE_FAILED", "Unable to restore file.")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeError(w, http.StatusNotFound, "FILE_NOT_FOUND", "No deleted file with that id.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// purgeFile permanently deletes the file in Drive (and locally).
+func (a *App) purgeFile(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	fileID := r.PathValue("id")
+	var providerFileID, accountID string
+	err := a.DB.QueryRow(`SELECT provider_file_id, connected_account_id FROM files WHERE id=? AND user_id=?`, fileID, user.ID).Scan(&providerFileID, &accountID)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "FILE_NOT_FOUND", "File not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "PURGE_FAILED", "Unable to load file.")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	if err := a.deleteDriveFile(ctx, accountID, providerFileID); err != nil {
+		writeError(w, 502, "PURGE_DRIVE_FAILED", "Drive delete failed: "+err.Error())
+		return
+	}
+	_, _ = a.DB.Exec(`DELETE FROM files WHERE id=? AND user_id=?`, fileID, user.ID)
+	go func() {
+		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = a.syncAccountQuota(c, accountID)
+	}()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// emptyAccountTrash permanently empties the Drive trash for one account (frees quota).
+func (a *App) emptyAccountTrash(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	accountID := r.PathValue("id")
+	var owner string
+	if err := a.DB.QueryRow(`SELECT user_id FROM connected_accounts WHERE id=?`, accountID).Scan(&owner); err != nil || owner != user.ID {
+		writeError(w, http.StatusNotFound, "ACCOUNT_NOT_FOUND", "Account not found.")
+		return
+	}
+	accessToken, err := a.getGoogleToken(r.Context(), accountID, false)
+	if err != nil {
+		writeError(w, 500, "EMPTY_TRASH_FAILED", "Unable to read account token.")
+		return
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodDelete, a.GoogleDriveAPIURL+"/files/trash", nil)
+	if err != nil {
+		writeError(w, 500, "EMPTY_TRASH_FAILED", "Unable to create Drive request.")
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := a.HTTPClient.Do(req)
+	if err != nil {
+		writeError(w, 502, "EMPTY_TRASH_FAILED", "Drive request failed.")
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		writeError(w, 502, "EMPTY_TRASH_FAILED", fmt.Sprintf("Drive rejected empty trash (%d): %s", resp.StatusCode, string(body)))
+		return
+	}
+	go func() {
+		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = a.syncAccountQuota(c, accountID)
+	}()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

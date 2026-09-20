@@ -18,7 +18,8 @@ import {
   Info,
   CheckCircle,
   ChevronDown,
-  Upload
+  Upload,
+  Trash2
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { BrandLogo } from '@/components/drive/BrandLogo'
@@ -30,6 +31,7 @@ import { cn } from '@/lib/utils'
 
 const menu = [
   { label: 'All Files', icon: FileArchive, href: '/all-files' },
+  { label: 'Trash', icon: Trash2, href: '/trash' },
   { label: 'Quota Tracker', icon: Gauge, href: '/quota' },
   { label: 'Settings', icon: Settings, href: '/settings' },
 ]

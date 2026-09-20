@@ -11,6 +11,7 @@ import { UploadProvider } from '@/context/UploadContext'
 const AllFilesPage = lazy(() => import('@/pages/AllFilesPage').then(({ AllFilesPage }) => ({ default: AllFilesPage })))
 const QuotaTrackerPage = lazy(() => import('@/pages/QuotaTrackerPage').then(({ QuotaTrackerPage }) => ({ default: QuotaTrackerPage })))
 const SettingsPage = lazy(() => import('@/pages/SettingsPage').then(({ SettingsPage }) => ({ default: SettingsPage })))
+const TrashPage = lazy(() => import('@/pages/TrashPage').then(({ TrashPage }) => ({ default: TrashPage })))
 
 function PageLoader() {
   return <main className="grid min-h-screen place-items-center text-sm font-semibold text-slate-500">Loading PanDrive…</main>
@@ -30,6 +31,7 @@ function App() {
               <Route index element={<Navigate to="/all-files" replace />} />
               <Route path="all-files" element={<AllFilesPage />} />
               <Route path="quota" element={<QuotaTrackerPage />} />
+              <Route path="trash" element={<TrashPage />} />
               <Route path="settings" element={<SettingsPage />} />
             </Route>
           </Route>
