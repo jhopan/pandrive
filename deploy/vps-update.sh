@@ -29,13 +29,27 @@ AUTH=()
 [ -n "${GITHUB_TOKEN:-}" ] && AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
 
 curl_json() { curl -fsSL --retry 3 --retry-delay 2 "${AUTH[@]}" -H 'Accept: application/vnd.github+json' "$1"; }
+# Extract from an in-memory copy so curl is never upstream of an early-exiting grep: with `set -o pipefail`
+# a SIGPIPE'd curl fails the whole pipeline (exit 23).
+json_field() { sed -nE "s/.*\"$2\": *\"([^\"]+)\".*/\1/p" <<<"$1" | head -1; }
 
+# Never execute the installed binary to read its version: an old build that predates --version would
+# boot, run migrations and (with a different CWD) create a second database. Read the marker the updater
+# writes, then fall back to what the service logged at boot.
+VERSION_FILE="${INSTALL_DIR}/.installed-version"
+installed_version() {
+  if [ -f "$VERSION_FILE" ]; then cat "$VERSION_FILE"; return; fi
+  local logged
+  logged="$(journalctl -u "$SERVICE" --no-pager -n 500 2>/dev/null | grep -oE 'PanDrive v[^ ]+' | tail -1 | sed 's/^PanDrive //')"
+  if [ -n "$logged" ]; then printf '%s\n' "$logged"; else echo unknown; fi
+}
 # "-deploy" was used by the old scp flow; treat it as the same release.
-installed_version() { "${INSTALL_DIR}/${ASSET}" --version 2>/dev/null | head -1 || echo unknown; }
 installed_base() { installed_version | sed 's/-deploy$//'; }
 
 latest_tag() {
-  curl_json "${API}/releases/latest" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/'
+  local payload
+  payload="$(curl_json "${API}/releases/latest")" || return 1
+  json_field "$payload" 'tag_name'
 }
 
 usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; }
@@ -54,7 +68,9 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "$MODE" = list ]; then
-  curl_json "${API}/releases?per_page=${KEEP_RELEASES}" | grep '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/  \1/'
+  local payload
+  payload="$(curl_json "${API}/releases?per_page=${KEEP_RELEASES}")" || exit 1
+  grep -oE '"tag_name": *"[^"]+"' <<<"$payload" | sed -E 's/.*"([^"]+)"$/  \1/'
   exit 0
 fi
 
@@ -88,9 +104,10 @@ curl -fsSL --retry 3 --retry-delay 2 -o "${TMP}/SHA256SUMS" "${BASE}/SHA256SUMS"
 
 chmod +x "${TMP}/${ASSET}"
 
-# Sanity: the new binary must at least report its version.
-if ! "${TMP}/${ASSET}" --version >/dev/null 2>&1; then
-  echo "downloaded binary does not run — nothing changed" >&2
+# Sanity: an ELF for linux (0x7f ELF). Running it would start the server, so check the magic bytes.
+magic="$(head -c 4 "${TMP}/${ASSET}" | od -An -tx1 | tr -d ' \n')"
+if [ "$magic" != "7f454c46" ]; then
+  echo "downloaded file is not an ELF binary — nothing changed" >&2
   exit 1
 fi
 
@@ -106,6 +123,7 @@ systemctl restart "$SERVICE"
 
 for _ in $(seq 1 20); do
   if curl -fsS -m 5 "$HEALTH_URL" 2>/dev/null | grep -q '"status":"ok"'; then
+    printf '%s\n' "$TAG" > "$VERSION_FILE"
     echo "healthy: $(installed_version)"
     ls -1dt /opt/9drive/backup-* 2>/dev/null | tail -n +$((KEEP_RELEASES + 1)) | xargs -r rm -rf
     exit 0
