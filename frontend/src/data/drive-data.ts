@@ -6,6 +6,7 @@ export type FolderItem = {
   iconUrl?: string | null
   parentId?: string | null
   providerFolderId?: string | null
+  starred?: boolean
 }
 
 export type FileItem = {
@@ -25,6 +26,7 @@ export type FileItem = {
   location?: string
   archivedDate?: string
   starredDate?: string
+  starred?: boolean
   openedDate?: string
   folderId?: string | null
   folderName?: string | null

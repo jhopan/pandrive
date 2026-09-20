@@ -289,7 +289,20 @@ CREATE TABLE IF NOT EXISTS share_links (
 CREATE INDEX IF NOT EXISTS share_links_user_idx ON share_links(user_id, revoked_at);
 CREATE INDEX IF NOT EXISTS activity_log_action_idx ON activity_log(user_id, action);
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	// SQLite cannot add a column with IF NOT EXISTS, so ignore the "duplicate column" error
+	// on databases created before the column existed.
+	for _, stmt := range []string{
+		`ALTER TABLE files ADD COLUMN starred INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE folders ADD COLUMN starred INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := a.DB.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+	return nil
 }
 
 // logActivity records an audit entry. Failures are logged but never break the request
@@ -517,6 +530,9 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /files/{id}/share", a.requireAuth(a.shareFileUrl))
 	mux.HandleFunc("POST /files/{id}/public-permission", a.requireAuth(a.publicPermission))
 	mux.HandleFunc("POST /files/{id}/public-link", a.requireAuth(a.publicPermission))
+	mux.HandleFunc("GET /starred", a.requireAuth(a.listStarred))
+	mux.HandleFunc("POST /files/{id}/star", a.requireAuth(a.starFile))
+	mux.HandleFunc("POST /folders/{id}/star", a.requireAuth(a.starFolder))
 	mux.HandleFunc("GET /shares", a.requireAuth(a.listShares))
 	mux.HandleFunc("DELETE /shares/{id}", a.requireAuth(a.revokeShare))
 	mux.HandleFunc("GET /uploads/queue", a.requireAuth(a.uploadQueue))
@@ -1232,7 +1248,7 @@ func (a *App) listFolders(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
 	parentID := r.URL.Query().Get("parentId")
 	accountID := r.URL.Query().Get("accountId")
-	query := `SELECT id,name,parent_id,color,created_at,updated_at FROM folders WHERE user_id=? AND deleted_at IS NULL`
+	query := `SELECT id,name,parent_id,color,created_at,updated_at,COALESCE(starred,0) FROM folders WHERE user_id=? AND deleted_at IS NULL`
 	args := []any{user.ID}
 	if parentID == "" {
 		query += ` AND parent_id IS NULL`
@@ -1255,8 +1271,9 @@ func (a *App) listFolders(w http.ResponseWriter, r *http.Request) {
 	folders := make([]map[string]any, 0)
 	for rows.Next() {
 		var id, name, color, createdAt, updatedAt string
+		var starred int
 		var parent sql.NullString
-		if err := rows.Scan(&id, &name, &parent, &color, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &name, &parent, &color, &createdAt, &updatedAt, &starred); err != nil {
 			writeError(w, 500, "FOLDERS_FAILED", "Unable to read folders.")
 			return
 		}
@@ -1264,7 +1281,7 @@ func (a *App) listFolders(w http.ResponseWriter, r *http.Request) {
 		if parent.Valid {
 			parentID = parent.String
 		}
-		folders = append(folders, map[string]any{"id": id, "name": name, "parentId": parentID, "color": color, "createdAt": createdAt, "updatedAt": updatedAt})
+		folders = append(folders, map[string]any{"id": id, "name": name, "parentId": parentID, "color": color, "createdAt": createdAt, "updatedAt": updatedAt, "starred": starred == 1})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"folders": folders})
 }
@@ -1279,7 +1296,7 @@ func (a *App) listFiles(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("status") == "deleted" {
 		statusFilter = "deleted"
 	}
-	query := `SELECT f.id,f.name,f.mime_type,f.size_bytes,f.provider_file_id,f.folder_id,f.created_at,f.updated_at,c.id,c.email,c.provider,COALESCE(d.name,''),COALESCE(f.deleted_at,'') FROM files f JOIN connected_accounts c ON c.id=f.connected_account_id LEFT JOIN folders d ON d.id=f.folder_id WHERE f.user_id=? AND f.status='` + statusFilter + `'`
+	query := `SELECT f.id,f.name,f.mime_type,f.size_bytes,f.provider_file_id,f.folder_id,f.created_at,f.updated_at,c.id,c.email,c.provider,COALESCE(d.name,''),COALESCE(f.deleted_at,''),COALESCE(f.starred,0) FROM files f JOIN connected_accounts c ON c.id=f.connected_account_id LEFT JOIN folders d ON d.id=f.folder_id WHERE f.user_id=? AND f.status='` + statusFilter + `'`
 	args := []any{user.ID}
 	if folderID != "" {
 		query += ` AND f.folder_id=?`
@@ -1304,8 +1321,9 @@ func (a *App) listFiles(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var id, name, mimeType, providerFileID, createdAt, updatedAt, accountID, email, provider, folderName, deletedAt string
 		var size int64
+		var starred int
 		var folderID sql.NullString
-		if err := rows.Scan(&id, &name, &mimeType, &size, &providerFileID, &folderID, &createdAt, &updatedAt, &accountID, &email, &provider, &folderName, &deletedAt); err != nil {
+		if err := rows.Scan(&id, &name, &mimeType, &size, &providerFileID, &folderID, &createdAt, &updatedAt, &accountID, &email, &provider, &folderName, &deletedAt, &starred); err != nil {
 			writeError(w, 500, "FILES_FAILED", "Unable to read files: "+err.Error())
 			return
 		}
@@ -1313,7 +1331,7 @@ func (a *App) listFiles(w http.ResponseWriter, r *http.Request) {
 		if folderID.Valid {
 			folder = map[string]string{"id": folderID.String, "name": folderName}
 		}
-		files = append(files, map[string]any{"id": id, "name": name, "mimeType": mimeType, "sizeBytes": fmt.Sprint(size), "providerFileId": providerFileID, "folder": folder, "createdAt": createdAt, "updatedAt": updatedAt, "deletedAt": deletedAt, "connectedAccount": map[string]string{"id": accountID, "email": email, "provider": provider}})
+		files = append(files, map[string]any{"id": id, "name": name, "mimeType": mimeType, "sizeBytes": fmt.Sprint(size), "providerFileId": providerFileID, "folder": folder, "createdAt": createdAt, "updatedAt": updatedAt, "deletedAt": deletedAt, "starred": starred == 1, "connectedAccount": map[string]string{"id": accountID, "email": email, "provider": provider}})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"files": files})
 }
@@ -2612,6 +2630,120 @@ func (a *App) removeUploadRecord(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// starFile toggles the starred flag on a file.
+func (a *App) starFile(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	fileID := r.PathValue("id")
+	var body struct {
+		Starred *bool `json:"starred"`
+	}
+	if err := decodeJSON(r, &body); err != nil || body.Starred == nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "starred (boolean) is required.")
+		return
+	}
+	value := 0
+	if *body.Starred {
+		value = 1
+	}
+	res, err := a.DB.Exec(`UPDATE files SET starred=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`, value, fileID, user.ID)
+	if err != nil {
+		writeError(w, 500, "STAR_FAILED", "Unable to update file.")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeError(w, http.StatusNotFound, "FILE_NOT_FOUND", "File not found.")
+		return
+	}
+	var name, accountID string
+	_ = a.DB.QueryRow(`SELECT name,connected_account_id FROM files WHERE id=?`, fileID).Scan(&name, &accountID)
+	detail := "Removed from starred"
+	if value == 1 {
+		detail = "Added to starred"
+	}
+	a.logActivity(r, user.ID, accountID, "file_star", "file", fileID, name, 0, detail)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "starred": value == 1})
+}
+
+// starFolder toggles the starred flag on a folder.
+func (a *App) starFolder(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	folderID := r.PathValue("id")
+	var body struct {
+		Starred *bool `json:"starred"`
+	}
+	if err := decodeJSON(r, &body); err != nil || body.Starred == nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "starred (boolean) is required.")
+		return
+	}
+	value := 0
+	if *body.Starred {
+		value = 1
+	}
+	res, err := a.DB.Exec(`UPDATE folders SET starred=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`, value, folderID, user.ID)
+	if err != nil {
+		writeError(w, 500, "STAR_FAILED", "Unable to update folder.")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeError(w, http.StatusNotFound, "FOLDER_NOT_FOUND", "Folder not found.")
+		return
+	}
+	var name string
+	_ = a.DB.QueryRow(`SELECT name FROM folders WHERE id=?`, folderID).Scan(&name)
+	detail := "Removed from starred"
+	if value == 1 {
+		detail = "Added to starred"
+	}
+	a.logActivity(r, user.ID, "", "folder_star", "folder", folderID, name, 0, detail)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "starred": value == 1})
+}
+
+// listStarred returns starred files and folders.
+func (a *App) listStarred(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+
+	files := []map[string]any{}
+	rows, err := a.DB.Query(`SELECT f.id,f.name,f.mime_type,f.size_bytes,COALESCE(f.created_at,''),COALESCE(f.updated_at,''),COALESCE(c.email,''),COALESCE(d.name,'')
+		FROM files f
+		LEFT JOIN connected_accounts c ON c.id=f.connected_account_id
+		LEFT JOIN folders d ON d.id=f.folder_id
+		WHERE f.user_id=? AND f.status='active' AND f.starred=1
+		ORDER BY f.updated_at DESC`, user.ID)
+	if err != nil {
+		writeError(w, 500, "STARRED_FAILED", "Unable to list starred files: "+err.Error())
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name, mimeType, createdAt, updatedAt, email, folder string
+		var size int64
+		if err := rows.Scan(&id, &name, &mimeType, &size, &createdAt, &updatedAt, &email, &folder); err != nil {
+			writeError(w, 500, "STARRED_FAILED", "Unable to read starred files.")
+			return
+		}
+		files = append(files, map[string]any{"id": id, "name": name, "mimeType": mimeType, "sizeBytes": fmt.Sprint(size),
+			"createdAt": createdAt, "updatedAt": updatedAt, "accountEmail": email, "folder": folder})
+	}
+
+	folders := []map[string]any{}
+	frows, err := a.DB.Query(`SELECT id,name,COALESCE(color,''),COALESCE(icon_url,''),COALESCE(updated_at,'')
+		FROM folders WHERE user_id=? AND starred=1 AND deleted_at IS NULL ORDER BY updated_at DESC`, user.ID)
+	if err != nil {
+		writeError(w, 500, "STARRED_FAILED", "Unable to list starred folders: "+err.Error())
+		return
+	}
+	defer frows.Close()
+	for frows.Next() {
+		var id, name, color, iconURL, updatedAt string
+		if err := frows.Scan(&id, &name, &color, &iconURL, &updatedAt); err != nil {
+			continue
+		}
+		folders = append(folders, map[string]any{"id": id, "name": name, "color": color, "iconUrl": iconURL, "updatedAt": updatedAt})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"files": files, "folders": folders, "total": len(files) + len(folders)})
+}
+
 // systemHealth reports the operational state: version, uptime, backup freshness, tunnel mode,
 // per-account token/sync status and OAuth config quota usage.
 func (a *App) systemHealth(w http.ResponseWriter, r *http.Request) {
@@ -2737,11 +2869,11 @@ func (a *App) systemHealth(w http.ResponseWriter, r *http.Request) {
 			"path": dbPath, "sizeBytes": fmt.Sprint(dbSize), "writable": dbWritable,
 			"backupPath": backupPath, "backupExists": backupExists, "backupAgeSeconds": backupAge,
 		},
-		"tunnel": map[string]any{"mode": tunnelMode, "enabled": tunnelMode != "off"},
-		"sync":   map[string]any{"intervalMinutes": 5, "quotaThreshold": 8000, "quotaWindowMax": 10000},
-		"accounts":    accounts,
+		"tunnel":       map[string]any{"mode": tunnelMode, "enabled": tunnelMode != "off"},
+		"sync":         map[string]any{"intervalMinutes": 5, "quotaThreshold": 8000, "quotaWindowMax": 10000},
+		"accounts":     accounts,
 		"oauthConfigs": configs,
-		"totals": map[string]any{"files": totalFiles, "bytes": fmt.Sprint(totalBytes), "trashedFiles": trashRows},
+		"totals":       map[string]any{"files": totalFiles, "bytes": fmt.Sprint(totalBytes), "trashedFiles": trashRows},
 	})
 }
 

@@ -1,4 +1,4 @@
-import { Copy, Download, Edit3, Eye, FolderInput, Info, Link2, Trash2, UserPlus } from 'lucide-react'
+import { Copy, Download, Edit3, Eye, FolderInput, Info, Link2, Star, Trash2, UserPlus } from 'lucide-react'
 import type { FileItem } from '@/data/drive-data'
 
 type Props = {
@@ -12,6 +12,7 @@ type Props = {
   onMove: () => void
   onDetails: () => void
   onShare: () => void
+  onToggleStar: () => void
   onCopyLink: () => void
   onInvite: () => void
   onDelete: () => void
@@ -61,7 +62,7 @@ function MenuItem({ icon: Icon, label, onClick, danger = false, kbd }: { icon: R
   )
 }
 
-export function FileContextMenu({ x, y, file, onClose, onView, onDownload, onRename, onMove, onDetails, onShare, onCopyLink, onInvite, onDelete }: Props) {
+export function FileContextMenu({ x, y, file, onClose, onView, onDownload, onRename, onMove, onDetails, onShare, onToggleStar, onCopyLink, onInvite, onDelete }: Props) {
   if (!file) return null
 
   const safeX = Math.max(12, Math.min(x, window.innerWidth - 228))
@@ -123,6 +124,7 @@ export function FileContextMenu({ x, y, file, onClose, onView, onDownload, onRen
         {/* Actions */}
         <div className="p-1.5">
           <MenuItem icon={Eye} label="Preview" onClick={onView} kbd="↵" />
+          <MenuItem icon={Star} label={file.starred ? 'Remove from Starred' : 'Add to Starred'} onClick={onToggleStar} />
           <MenuItem icon={Download} label="Download" onClick={onDownload} />
           <MenuItem icon={Edit3} label="Rename" onClick={onRename} />
           <MenuItem icon={FolderInput} label="Move to Folder" onClick={onMove} />

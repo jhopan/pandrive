@@ -1,4 +1,12 @@
-import { Copy, Edit3, FolderOpen, Scissors, Trash2, UserPlus } from 'lucide-react'
+import {
+  Copy,
+  Edit3,
+  FolderOpen,
+  Scissors,
+  Trash2,
+  UserPlus,
+  Star,
+} from 'lucide-react'
 import type { FolderItem } from '@/data/drive-data'
 
 type Props = {
@@ -10,6 +18,7 @@ type Props = {
   onRename: () => void
   onInvite: () => void
   onCopyLink: () => void
+  onToggleStar: () => void
   onDelete: () => void
 }
 
@@ -43,7 +52,7 @@ function MenuItem({ icon: Icon, label, onClick, danger = false, kbd }: { icon: R
   )
 }
 
-export function FolderContextMenu({ x, y, folder, onClose, onCut, onRename, onInvite, onCopyLink, onDelete }: Props) {
+export function FolderContextMenu({ x, y, folder, onClose, onCut, onRename, onInvite, onCopyLink, onToggleStar, onDelete }: Props) {
   if (!folder) return null
   const safeX = Math.max(12, Math.min(x, window.innerWidth - 228))
   const safeY = Math.max(12, Math.min(y, window.innerHeight - 280))
@@ -79,6 +88,7 @@ export function FolderContextMenu({ x, y, folder, onClose, onCut, onRename, onIn
         {/* Actions */}
         <div className="p-1.5">
           <MenuItem icon={Copy} label="Copy Link" onClick={onCopyLink} />
+          <MenuItem icon={Star} label={folder.starred ? 'Remove from Starred' : 'Add to Starred'} onClick={onToggleStar} />
           <MenuItem icon={Scissors} label="Cut" onClick={onCut} kbd="⌘X" />
           <MenuItem icon={Edit3} label="Rename" onClick={onRename} />
           <MenuItem icon={UserPlus} label="Invite Member" onClick={onInvite} />

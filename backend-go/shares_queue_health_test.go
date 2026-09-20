@@ -189,11 +189,11 @@ func TestSystemHealthReport(t *testing.T) {
 	var out struct {
 		Version  string `json:"version"`
 		Database struct {
-			Writable       bool   `json:"writable"`
-			BackupAgeSecs  int64  `json:"backupAgeSeconds"`
-			BackupExists   bool   `json:"backupExists"`
-			SizeBytes      string `json:"sizeBytes"`
-			Path           string `json:"path"`
+			Writable      bool   `json:"writable"`
+			BackupAgeSecs int64  `json:"backupAgeSeconds"`
+			BackupExists  bool   `json:"backupExists"`
+			SizeBytes     string `json:"sizeBytes"`
+			Path          string `json:"path"`
 		} `json:"database"`
 		Tunnel struct {
 			Enabled bool   `json:"enabled"`

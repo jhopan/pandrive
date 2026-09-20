@@ -47,6 +47,7 @@ Implemented and tested:
 - `GET /files/duplicates` (same name + size across accounts)
 - `GET /storage/analyzer` (per-account, by-type, largest files)
 - `GET /activity` (`?action=` `?accountId=` `?limit=` `?offset=`) — audit trail
+- `GET /starred` / `POST /files/{id}/star` / `POST /folders/{id}/star`
 - `POST /files/{id}/public-link` (create public Drive permission + link)
 - `GET /shares` / `DELETE /shares/{id}` (list / revoke public links)
 - `GET /uploads/queue` (`?status=`) / `POST /uploads/queue/{id}/cancel` / `DELETE /uploads/queue/{id}`
@@ -99,6 +100,7 @@ http://localhost:4000/connected-accounts/google/callback
 | Menu | What it does |
 |------|--------------|
 | **All Files** | Every synced file across all connected accounts; upload, rename, move, ZIP batch download, per-account filter |
+| **Starred** | Files and folders pinned via right-click → Add to Starred; unstar or open from the page |
 | **Account Files** | Same view scoped to one account (click an account in the sidebar) |
 | **Trash** | Locally deleted files (restorable) plus permanent delete and **Empty Drive trash** per account to actually free quota |
 | **Duplicates** | Finds same-name + same-size files across every account, one-click select of the extra copies, reclaimable bytes total |

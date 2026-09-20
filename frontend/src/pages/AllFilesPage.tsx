@@ -23,8 +23,8 @@ import type { FileItem, FolderItem } from '@/data/drive-data'
 import { useUpload } from '@/context/UploadContext'
 import { useDriveLayoutActions } from '@/layouts/DriveLayout'
 
-type BackendFile = { id: string; name: string; mimeType: string; sizeBytes: string; createdAt: string; folderId?: string | null; connectedAccount?: { email: string; provider: string }; folder?: { id: string; name: string } | null }
-type BackendFolder = { id: string; name: string; color: string; iconUrl?: string | null; parentId?: string | null; providerFolderId?: string | null; updatedAt: string }
+type BackendFile = { id: string; name: string; mimeType: string; sizeBytes: string; createdAt: string; folderId?: string | null; starred?: boolean; connectedAccount?: { email: string; provider: string }; folder?: { id: string; name: string } | null }
+type BackendFolder = { id: string; name: string; color: string; iconUrl?: string | null; parentId?: string | null; providerFolderId?: string | null; starred?: boolean; updatedAt: string }
 type ConnectedAccount = { id: string; provider: string; email: string; displayName?: string | null; status: string }
 
 const sizeActiveClasses: Record<FolderSizeScale, string> = {
@@ -56,11 +56,11 @@ function providerLabel(provider: string | undefined) {
 }
 
 function mapFile(file: BackendFile): FileItem {
-  return { id: file.id, name: file.name, mimeType: file.mimeType, sizeBytes: file.sizeBytes, createdAt: file.createdAt, accountEmail: file.connectedAccount?.email, accountProvider: providerLabel(file.connectedAccount?.provider), date: formatDate(file.createdAt), size: formatBytes(file.sizeBytes), access: file.connectedAccount?.email ?? providerLabel(file.connectedAccount?.provider), kind: mimeToKind(file.mimeType), shared: 1, folderId: file.folderId, folderName: file.folder?.name }
+  return { id: file.id, name: file.name, mimeType: file.mimeType, sizeBytes: file.sizeBytes, createdAt: file.createdAt, accountEmail: file.connectedAccount?.email, accountProvider: providerLabel(file.connectedAccount?.provider), date: formatDate(file.createdAt), size: formatBytes(file.sizeBytes), access: file.connectedAccount?.email ?? providerLabel(file.connectedAccount?.provider), kind: mimeToKind(file.mimeType), shared: 1, starred: file.starred ?? false, folderId: file.folderId, folderName: file.folder?.name }
 }
 
 function mapFolder(folder: BackendFolder): FolderItem {
-  return { id: folder.id, name: folder.name, color: folder.color, iconUrl: folder.iconUrl, parentId: folder.parentId, providerFolderId: folder.providerFolderId, updated: `Updated ${formatDate(folder.updatedAt)}` }
+  return { id: folder.id, name: folder.name, color: folder.color, iconUrl: folder.iconUrl, parentId: folder.parentId, providerFolderId: folder.providerFolderId, starred: folder.starred ?? false, updated: `Updated ${formatDate(folder.updatedAt)}` }
 }
 
 
@@ -507,6 +507,37 @@ export function AllFilesPage() {
     window.dispatchEvent(new Event('pandrive:storage-changed'))
   }
 
+  async function toggleStar(file: FileItem) {
+    if (!file.id) return
+    const next = !file.starred
+    setFiles((prev) => prev.map((f) => (f.id === file.id ? { ...f, starred: next } : f)))
+    setContextMenu({ x: 0, y: 0, file: null })
+    try {
+      await apiFetch(`/files/${file.id}/star`, { method: 'POST', body: JSON.stringify({ starred: next }) })
+      setMessage(next ? `Added "${file.name}" to Starred.` : `Removed "${file.name}" from Starred.`)
+      setTimeout(() => setMessage(''), 2500)
+    } catch (error) {
+      // Roll the optimistic update back so the UI never lies about the saved state.
+      setFiles((prev) => prev.map((f) => (f.id === file.id ? { ...f, starred: !next } : f)))
+      setMessage(error instanceof Error ? error.message : 'Failed to update starred')
+    }
+  }
+
+  async function toggleFolderStar(folder: FolderItem) {
+    if (!folder.id) return
+    const next = !folder.starred
+    setFolders((prev) => prev.map((f) => (f.id === folder.id ? { ...f, starred: next } : f)))
+    setFolderContextMenu({ x: 0, y: 0, folder: null })
+    try {
+      await apiFetch(`/folders/${folder.id}/star`, { method: 'POST', body: JSON.stringify({ starred: next }) })
+      setMessage(next ? `Added "${folder.name}" to Starred.` : `Removed "${folder.name}" from Starred.`)
+      setTimeout(() => setMessage(''), 2500)
+    } catch (error) {
+      setFolders((prev) => prev.map((f) => (f.id === folder.id ? { ...f, starred: !next } : f)))
+      setMessage(error instanceof Error ? error.message : 'Failed to update starred')
+    }
+  }
+
   async function shareFile() {
     if (!activeFile?.id) return
     const data = await apiFetch<{ url: string }>(`/files/${activeFile.id}/share`, { method: 'POST' })
@@ -757,8 +788,8 @@ export function AllFilesPage() {
       )}
       </div>
       <EmptyAreaContextMenu x={emptyContextMenu.x} y={emptyContextMenu.y} open={emptyContextMenu.open} canPasteFolder={Boolean(cutFolder)} onClose={() => setEmptyContextMenu({ x: 0, y: 0, open: false })} onUpload={() => { setUploadOpen(true); setEmptyContextMenu({ x: 0, y: 0, open: false }) }} onCreateFolder={() => { setFolderOpen(true); setEmptyContextMenu({ x: 0, y: 0, open: false }) }} onPasteFolder={() => { pasteFolder().catch((error) => setMessage(error instanceof Error ? error.message : 'Failed to paste folder')); setEmptyContextMenu({ x: 0, y: 0, open: false }) }} />
-      <FileContextMenu x={contextMenu.x} y={contextMenu.y} file={contextMenu.file} onClose={() => setContextMenu({ x: 0, y: 0, file: null })} onView={viewFile} onDownload={downloadFile} onRename={() => { setRenameValue(activeFile?.name ?? ''); setRenameOpen(true); setContextMenu({ x: 0, y: 0, file: null }) }} onMove={() => { setMoveOpen(true); setContextMenu({ x: 0, y: 0, file: null }) }} onDetails={() => { setDetailOpen(true); setContextMenu({ x: 0, y: 0, file: null }) }} onShare={shareFile} onCopyLink={copyShareLinkDirect} onInvite={inviteToFile} onDelete={() => { setDeleteOpen(true); setContextMenu({ x: 0, y: 0, file: null }) }} />
-      <FolderContextMenu x={folderContextMenu.x} y={folderContextMenu.y} folder={folderContextMenu.folder} onClose={() => setFolderContextMenu({ x: 0, y: 0, folder: null })} onCut={() => cutSelectedFolder(activeFolderForMenu)} onRename={() => { setFolderRenameValue(activeFolderForMenu?.name ?? ''); setFolderRenameColor(normalizeFolderColor(activeFolderForMenu?.color)); setFolderRenameIconUrl(activeFolderForMenu?.iconUrl ?? defaultFolderIconUrl); setFolderRenameOpen(true); setFolderContextMenu({ x: 0, y: 0, folder: null }) }} onInvite={inviteToFolder} onCopyLink={copyFolderLink} onDelete={() => { setFolderDeleteOpen(true); setFolderContextMenu({ x: 0, y: 0, folder: null }) }} />
+      <FileContextMenu x={contextMenu.x} y={contextMenu.y} file={contextMenu.file} onClose={() => setContextMenu({ x: 0, y: 0, file: null })} onView={viewFile} onDownload={downloadFile} onRename={() => { setRenameValue(activeFile?.name ?? ''); setRenameOpen(true); setContextMenu({ x: 0, y: 0, file: null }) }} onMove={() => { setMoveOpen(true); setContextMenu({ x: 0, y: 0, file: null }) }} onDetails={() => { setDetailOpen(true); setContextMenu({ x: 0, y: 0, file: null }) }} onShare={shareFile} onToggleStar={() => contextMenu.file && toggleStar(contextMenu.file)} onCopyLink={copyShareLinkDirect} onInvite={inviteToFile} onDelete={() => { setDeleteOpen(true); setContextMenu({ x: 0, y: 0, file: null }) }} />
+      <FolderContextMenu x={folderContextMenu.x} y={folderContextMenu.y} folder={folderContextMenu.folder} onClose={() => setFolderContextMenu({ x: 0, y: 0, folder: null })} onCut={() => cutSelectedFolder(activeFolderForMenu)} onRename={() => { setFolderRenameValue(activeFolderForMenu?.name ?? ''); setFolderRenameColor(normalizeFolderColor(activeFolderForMenu?.color)); setFolderRenameIconUrl(activeFolderForMenu?.iconUrl ?? defaultFolderIconUrl); setFolderRenameOpen(true); setFolderContextMenu({ x: 0, y: 0, folder: null }) }} onInvite={inviteToFolder} onCopyLink={copyFolderLink} onToggleStar={() => folderContextMenu.folder && toggleFolderStar(folderContextMenu.folder)} onDelete={() => { setFolderDeleteOpen(true); setFolderContextMenu({ x: 0, y: 0, folder: null }) }} />
       <FileDetailsDrawer open={detailOpen} file={activeFile} onClose={() => setDetailOpen(false)} />
 
       <DummyModal open={uploadOpen} title="Upload File" description="Stream file directly to selected Google Drive account." onClose={() => setUploadOpen(false)}>

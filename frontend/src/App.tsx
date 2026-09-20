@@ -11,6 +11,7 @@ import { UploadProvider } from '@/context/UploadContext'
 const AllFilesPage = lazy(() => import('@/pages/AllFilesPage').then(({ AllFilesPage }) => ({ default: AllFilesPage })))
 const QuotaTrackerPage = lazy(() => import('@/pages/QuotaTrackerPage').then(({ QuotaTrackerPage }) => ({ default: QuotaTrackerPage })))
 const SettingsPage = lazy(() => import('@/pages/SettingsPage').then(({ SettingsPage }) => ({ default: SettingsPage })))
+const StarredPage = lazy(() => import('@/pages/StarredPage').then(({ StarredPage }) => ({ default: StarredPage })))
 const HealthPage = lazy(() => import('@/pages/HealthPage').then(({ HealthPage }) => ({ default: HealthPage })))
 const SharedPage = lazy(() => import('@/pages/SharedPage').then(({ SharedPage }) => ({ default: SharedPage })))
 const UploadsPage = lazy(() => import('@/pages/UploadsPage').then(({ UploadsPage }) => ({ default: UploadsPage })))
@@ -42,6 +43,7 @@ function App() {
               <Route path="storage" element={<StoragePage />} />
               <Route path="activity" element={<ActivityPage />} />
               <Route path="shared" element={<SharedPage />} />
+              <Route path="starred" element={<StarredPage />} />
               <Route path="uploads" element={<UploadsPage />} />
               <Route path="health" element={<HealthPage />} />
               <Route path="settings" element={<SettingsPage />} />
