@@ -1,6 +1,8 @@
 package main
 
 import (
+	"time"
+	"fmt"
 	"bytes"
 	"database/sql"
 	"encoding/json"
@@ -14,7 +16,10 @@ import (
 
 func newTestApp(t *testing.T) *App {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file::memory:?cache=shared")
+	// Unique in-memory DB per test: the shared default made tests interfere
+	// (a background goroutine from one test could close the handle another test uses).
+	dsn := fmt.Sprintf("file:test_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

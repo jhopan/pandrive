@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -491,17 +492,15 @@ func (a *App) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var user authUser
-	err := a.DB.QueryRow(`SELECT u.id,u.name,u.email FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE s.refresh_token_hash=? AND s.revoked_at IS NULL AND s.expires_at > ?`, hashToken(body.RefreshToken), time.Now().UTC().Format(time.RFC3339Nano)).Scan(&user.ID, &user.Name, &user.Email)
+	var sessionID string
+	err := a.DB.QueryRow(`SELECT s.id,u.id,u.name,u.email FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE s.refresh_token_hash=? AND s.revoked_at IS NULL AND s.expires_at > ?`, hashToken(body.RefreshToken), time.Now().UTC().Format(time.RFC3339Nano)).Scan(&sessionID, &user.ID, &user.Name, &user.Email)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "AUTH_SESSION_EXPIRED", "Refresh token expired.")
 		return
 	}
-	token, err := a.signAccessToken(user)
-	if err != nil {
-		writeError(w, 500, "TOKEN_FAILED", "Unable to refresh session.")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"accessToken": token})
+	// Rotation: revoke the used refresh token and issue a fresh pair.
+	_, _ = a.DB.Exec(`UPDATE user_sessions SET revoked_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), sessionID)
+	a.respondSession(w, http.StatusOK, user)
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
@@ -935,6 +934,7 @@ func (a *App) createFolder(w http.ResponseWriter, r *http.Request) {
 func (a *App) listFolders(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
 	parentID := r.URL.Query().Get("parentId")
+	accountID := r.URL.Query().Get("accountId")
 	query := `SELECT id,name,parent_id,color,created_at,updated_at FROM folders WHERE user_id=? AND deleted_at IS NULL`
 	args := []any{user.ID}
 	if parentID == "" {
@@ -942,6 +942,11 @@ func (a *App) listFolders(w http.ResponseWriter, r *http.Request) {
 	} else {
 		query += ` AND parent_id=?`
 		args = append(args, parentID)
+	}
+	// When browsing a single account, show its mirrored folders plus local (account-less) ones.
+	if accountID != "" {
+		query += ` AND (connected_account_id=? OR connected_account_id IS NULL)`
+		args = append(args, accountID)
 	}
 	query += ` ORDER BY name COLLATE NOCASE`
 	rows, err := a.DB.Query(query, args...)
@@ -1356,11 +1361,22 @@ func (a *App) syncAccountFiles(ctx context.Context, userID, accountID string) (c
 	if err != nil {
 		return 0, 0, err
 	}
+	type driveItem struct {
+		ID       string   `json:"id"`
+		Name     string   `json:"name"`
+		MIMEType string   `json:"mimeType"`
+		Size     string   `json:"size"`
+		Created  string   `json:"createdTime"`
+		Modified string   `json:"modifiedTime"`
+		Trashed  bool     `json:"trashed"`
+		Parents  []string `json:"parents"`
+	}
 	// Paginated listing: loop through all pages via nextPageToken (Google caps 1000/page).
+	var items []driveItem
 	seen := map[string]bool{}
 	pageToken := ""
 	for {
-		listURL := a.GoogleDriveAPIURL + `/files?pageSize=1000&orderBy=modifiedTime%20desc&fields=nextPageToken,files(id,name,mimeType,size,createdTime,modifiedTime,trashed)`
+		listURL := a.GoogleDriveAPIURL + `/files?pageSize=1000&orderBy=modifiedTime%20desc&fields=nextPageToken,files(id,name,mimeType,size,createdTime,modifiedTime,trashed,parents)`
 		if pageToken != "" {
 			listURL += `&pageToken=` + url.QueryEscape(pageToken)
 		}
@@ -1379,16 +1395,8 @@ func (a *App) syncAccountFiles(ctx context.Context, userID, accountID string) (c
 			return created, updated, fmt.Errorf("google drive listing rejected (%d): %s", response.StatusCode, string(body))
 		}
 		var payload struct {
-			NextPageToken string `json:"nextPageToken"`
-			Files []struct {
-				ID       string `json:"id"`
-				Name     string `json:"name"`
-				MIMEType string `json:"mimeType"`
-				Size     string `json:"size"`
-				Created  string `json:"createdTime"`
-				Modified string `json:"modifiedTime"`
-				Trashed  bool   `json:"trashed"`
-			} `json:"files"`
+			NextPageToken string      `json:"nextPageToken"`
+			Files         []driveItem `json:"files"`
 		}
 		err = json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&payload)
 		response.Body.Close()
@@ -1400,29 +1408,81 @@ func (a *App) syncAccountFiles(ctx context.Context, userID, accountID string) (c
 				continue
 			}
 			seen[item.ID] = true
-			var size int64
-			_, _ = fmt.Sscan(item.Size, &size)
-			var exists int
-			_ = a.DB.QueryRow(`SELECT 1 FROM files WHERE user_id=? AND connected_account_id=? AND provider_file_id=?`, userID, accountID, item.ID).Scan(&exists)
-			if exists == 1 {
-				_, err = a.DB.Exec(`UPDATE files SET name=?,mime_type=?,size_bytes=?,updated_at=? WHERE user_id=? AND connected_account_id=? AND provider_file_id=?`, item.Name, item.MIMEType, size, item.Modified, userID, accountID, item.ID)
-				if err == nil {
-					updated++
-				}
-			} else {
-				_, err = a.DB.Exec(`INSERT INTO files (id,user_id,connected_account_id,provider,provider_file_id,name,mime_type,size_bytes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`, randomID(), userID, accountID, "google_drive", item.ID, item.Name, item.MIMEType, size, item.Created, item.Modified)
-				if err == nil {
-					created++
-				}
-			}
+			items = append(items, item)
 		}
 		if payload.NextPageToken == "" {
 			break
 		}
 		pageToken = payload.NextPageToken
 	}
-	// Trash handling: files in DB for this account that Google no longer lists are removed from Drive. Soft-delete them so listings stop showing zombies.
-	// A successful full listing is required: if the last page errored we would have returned earlier, so `seen` is complete here.
+
+	// Pass 1: upsert folders (Drive folder hierarchy -> local folders table).
+	// Pass 2: link parent_id (parents may appear in any order in the listing).
+	folderIDByProvider := map[string]string{} // provider folder id -> local folder id
+	isFolder := func(mime string) bool { return mime == "application/vnd.google-apps.folder" }
+	for _, item := range items {
+		if !isFolder(item.MIMEType) {
+			continue
+		}
+		var existing string
+		errDB := a.DB.QueryRow(`SELECT id FROM folders WHERE user_id=? AND connected_account_id=? AND provider_folder_id=?`, userID, accountID, item.ID).Scan(&existing)
+		if errDB == sql.ErrNoRows {
+			local := randomID()
+			_, err = a.DB.Exec(`INSERT INTO folders (id,user_id,connected_account_id,provider,provider_folder_id,name,deleted_at) VALUES (?,?,?,?,?,?,NULL)`, local, userID, accountID, "google_drive", item.ID, item.Name)
+			if err == nil {
+				folderIDByProvider[item.ID] = local
+			} else {
+				log.Printf("sync: folder insert failed for %s (%s): %v", item.Name, item.ID, err)
+			}
+		} else {
+			folderIDByProvider[item.ID] = existing
+			_, _ = a.DB.Exec(`UPDATE folders SET name=?, deleted_at=NULL, updated_at=? WHERE id=?`, item.Name, item.Modified, existing)
+		}
+	}
+	for _, item := range items {
+		if !isFolder(item.MIMEType) || len(item.Parents) == 0 {
+			continue
+		}
+		local, ok := folderIDByProvider[item.ID]
+		if !ok {
+			continue
+		}
+		parentLocal := ""
+		if p, ok := folderIDByProvider[item.Parents[0]]; ok {
+			parentLocal = p
+		}
+		if parentLocal != "" {
+			_, _ = a.DB.Exec(`UPDATE folders SET parent_id=? WHERE id=?`, parentLocal, local)
+		}
+	}
+
+	// Pass 3: files - upsert metadata and attach to their mirrored folder.
+	for _, item := range items {
+		if isFolder(item.MIMEType) {
+			continue
+		}
+		var size int64
+		_, _ = fmt.Sscan(item.Size, &size)
+		folderLocal := ""
+		if len(item.Parents) > 0 {
+			folderLocal = folderIDByProvider[item.Parents[0]]
+		}
+		var exists int
+		_ = a.DB.QueryRow(`SELECT 1 FROM files WHERE user_id=? AND connected_account_id=? AND provider_file_id=?`, userID, accountID, item.ID).Scan(&exists)
+		if exists == 1 {
+			_, err = a.DB.Exec(`UPDATE files SET name=?,mime_type=?,size_bytes=?,folder_id=?,updated_at=? WHERE user_id=? AND connected_account_id=? AND provider_file_id=?`, item.Name, item.MIMEType, size, nullIfEmpty(folderLocal), item.Modified, userID, accountID, item.ID)
+			if err == nil {
+				updated++
+			}
+		} else {
+			_, err = a.DB.Exec(`INSERT INTO files (id,user_id,connected_account_id,provider,provider_file_id,name,mime_type,size_bytes,folder_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, randomID(), userID, accountID, "google_drive", item.ID, item.Name, item.MIMEType, size, nullIfEmpty(folderLocal), item.Created, item.Modified)
+			if err == nil {
+				created++
+			}
+		}
+	}
+
+	// Trash handling: files/folders in DB that Google no longer lists are gone. Soft-delete them.
 	rows, err := a.DB.Query(`SELECT provider_file_id FROM files WHERE user_id=? AND connected_account_id=? AND status='active' AND provider='google_drive'`, userID, accountID)
 	if err != nil {
 		return created, updated, err
@@ -1438,11 +1498,11 @@ func (a *App) syncAccountFiles(ctx context.Context, userID, accountID string) (c
 	if len(missing) > 0 {
 		placeholders := strings.Repeat("?,", len(missing))
 		placeholders = placeholders[:len(placeholders)-1]
-		args := []any{userID, accountID}
+		args := []any{time.Now().UTC().Format(time.RFC3339Nano), userID, accountID}
 		for _, pfid := range missing {
 			args = append(args, pfid)
 		}
-		res, err := a.DB.Exec(`UPDATE files SET status='deleted', deleted_at=? WHERE user_id=? AND connected_account_id=? AND status='active' AND provider_file_id IN (`+placeholders+`)`, append([]any{time.Now().UTC().Format(time.RFC3339Nano)}, args...)...)
+		res, err := a.DB.Exec(`UPDATE files SET status='deleted', deleted_at=? WHERE user_id=? AND connected_account_id=? AND status='active' AND provider_file_id IN (`+placeholders+`)`, args...)
 		if err != nil {
 			return created, updated, err
 		}
@@ -1450,7 +1510,37 @@ func (a *App) syncAccountFiles(ctx context.Context, userID, accountID string) (c
 			log.Printf("sync: marked %d file(s) as deleted for account %s", n, accountID)
 		}
 	}
+	// Same for folders: gone from Drive -> soft-delete locally.
+	frows, err := a.DB.Query(`SELECT provider_folder_id FROM folders WHERE user_id=? AND connected_account_id=? AND deleted_at IS NULL`, userID, accountID)
+	if err != nil {
+		return created, updated, err
+	}
+	var missingFolders []string
+	for frows.Next() {
+		var pfid string
+		if frows.Scan(&pfid) == nil && pfid != "" && !seen[pfid] {
+			missingFolders = append(missingFolders, pfid)
+		}
+	}
+	frows.Close()
+	if len(missingFolders) > 0 {
+		ph := strings.Repeat("?,", len(missingFolders))
+		ph = ph[:len(ph)-1]
+		fargs := []any{time.Now().UTC().Format(time.RFC3339Nano), userID, accountID}
+		for _, pfid := range missingFolders {
+			fargs = append(fargs, pfid)
+		}
+		_, _ = a.DB.Exec(`UPDATE folders SET deleted_at=? WHERE user_id=? AND connected_account_id=? AND provider_folder_id IN (`+ph+`)`, fargs...)
+	}
 	return created, updated, nil
+}
+
+// nullIfEmpty returns nil for empty strings so nullable FK columns stay NULL.
+func nullIfEmpty(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
 }
 
 func (a *App) syncGoogleFiles(w http.ResponseWriter, r *http.Request) {
@@ -1721,7 +1811,13 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]string{"code": code, "message": message})
 }
-func randomID() string { return fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid()) }
+// idCounter guarantees uniqueness even when the system clock has coarse resolution
+// (Windows timer granularity is ~1-15ms, so UnixNano alone collided on rapid inserts).
+var idCounter atomic.Uint64
+
+func randomID() string {
+	return fmt.Sprintf("%d-%d-%d", time.Now().UnixNano(), os.Getpid(), idCounter.Add(1))
+}
 
 func randomToken() string {
 	bytes := make([]byte, 32)

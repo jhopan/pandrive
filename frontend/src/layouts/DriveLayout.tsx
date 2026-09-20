@@ -96,7 +96,7 @@ function SystemInfoDropdown({ storage }: { storage: any }) {
   )
 }
 
-function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigate?: () => void; user: AuthUser | null; storage: StorageSummary | null; breakdown: StorageBreakdown; onLogout: () => void }) {
+function Sidebar({ onNavigate, user, storage, breakdown, onLogout, accounts = [] }: { onNavigate?: () => void; user: AuthUser | null; storage: StorageSummary | null; breakdown: StorageBreakdown; onLogout: () => void; accounts?: { id: string; email: string }[] }) {
   const used = Number(storage?.usedBytes ?? 0)
   const total = Number(storage?.totalBytes ?? 0)
   const progress = total > 0 ? Math.min(100, (used / total) * 100) : 0
@@ -133,6 +133,17 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
             {item.label}
           </NavLink>
         ))}
+        {accounts.length > 0 ? (
+          <>
+            <p className="mt-3 px-3.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">Accounts</p>
+            {accounts.map((acc) => (
+              <NavLink key={acc.id} to={`/all-files?accountId=${encodeURIComponent(acc.id)}`} onClick={onNavigate} className="inline-flex h-9 items-center gap-2.5 rounded-xl px-3.5 text-[12px] font-semibold text-slate-500 transition-all hover:bg-slate-200/50 hover:text-slate-900 truncate">
+                <HardDrive className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">{acc.email}</span>
+              </NavLink>
+            ))}
+          </>
+        ) : null}
       </nav>
 
       <div className="mt-auto border-t border-slate-200/60 pt-4 text-[13px]">
@@ -416,7 +427,7 @@ export function DriveLayout() {
       )}
       <div className="flex min-h-screen w-full flex-col bg-white lg:h-screen lg:overflow-hidden lg:flex-row">
         <div className="hidden lg:block lg:h-screen lg:shrink-0">
-          <Sidebar user={user} storage={storage} breakdown={breakdown} onLogout={logout} />
+          <Sidebar user={user} storage={storage} breakdown={breakdown} onLogout={logout} accounts={accounts} />
         </div>
         <div className={cn('fixed inset-0 z-40 bg-slate-950/40 transition-opacity lg:hidden', sidebarOpen ? 'opacity-100' : 'pointer-events-none opacity-0')} onClick={() => setSidebarOpen(false)} />
         <div className={cn('fixed inset-y-0 left-0 z-50 transform bg-white shadow-2xl transition-transform duration-300 ease-out lg:hidden', sidebarOpen ? 'translate-x-0' : '-translate-x-full')}>
@@ -425,7 +436,7 @@ export function DriveLayout() {
               <X className="h-5 w-5" />
             </Button>
           </div>
-          <Sidebar user={user} storage={storage} breakdown={breakdown} onLogout={logout} onNavigate={() => setSidebarOpen(false)} />
+          <Sidebar user={user} storage={storage} breakdown={breakdown} onLogout={logout} accounts={accounts} onNavigate={() => setSidebarOpen(false)} />
         </div>
         <section className="min-w-0 flex-1 p-4 sm:p-6 lg:h-screen lg:overflow-y-auto lg:p-8">
           <header className="flex w-full min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">

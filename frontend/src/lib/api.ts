@@ -4,7 +4,44 @@ export const API_URL = (rawApiUrl && rawApiUrl !== 'http://localhost:4000')
   ? rawApiUrl
   : (isProd ? '/api' : 'http://127.0.0.1:4000')
 
-export async function apiFetch<T = any>(endpoint: string, options: RequestInit & { skipAuth?: boolean } = {}): Promise<T> {
+let refreshInFlight: Promise<boolean> | null = null
+
+// refreshSession exchanges the stored refresh token for a new pair (rotation-aware).
+async function refreshSession(): Promise<boolean> {
+  if (refreshInFlight) return refreshInFlight
+  const refreshToken = localStorage.getItem('pandrive.refreshToken')
+  if (!refreshToken) return false
+  refreshInFlight = (async () => {
+    try {
+      const res = await fetch(`${API_URL}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken })
+      })
+      if (!res.ok) return false
+      const data = await res.json() as { accessToken: string; refreshToken?: string; user?: unknown }
+      localStorage.setItem('pandrive.accessToken', data.accessToken)
+      // Rotation: server revokes the old refresh token and returns a new one.
+      if (data.refreshToken) localStorage.setItem('pandrive.refreshToken', data.refreshToken)
+      if (data.user) localStorage.setItem('pandrive.user', JSON.stringify(data.user))
+      return true
+    } catch {
+      return false
+    } finally {
+      refreshInFlight = null
+    }
+  })()
+  return refreshInFlight
+}
+
+function clearSessionAndLogin() {
+  localStorage.removeItem('pandrive.accessToken')
+  localStorage.removeItem('pandrive.refreshToken')
+  localStorage.removeItem('pandrive.user')
+  window.location.href = '/login'
+}
+
+export async function apiFetch<T = any>(endpoint: string, options: RequestInit & { skipAuth?: boolean } = {}, retried = false): Promise<T> {
   const token = localStorage.getItem('pandrive.accessToken')
   const headers = new Headers(options.headers || {})
   
@@ -25,11 +62,15 @@ export async function apiFetch<T = any>(endpoint: string, options: RequestInit &
   })
 
   if (!response.ok) {
+    // Access token expired -> refresh once (with rotation) and replay the request.
+    if (response.status === 401 && !options.skipAuth && !retried) {
+      const ok = await refreshSession()
+      if (ok) return apiFetch<T>(endpoint, options, true)
+      clearSessionAndLogin()
+      throw new Error('Session expired')
+    }
     if (response.status === 401) {
-      localStorage.removeItem('pandrive.accessToken')
-      localStorage.removeItem('pandrive.refreshToken')
-      localStorage.removeItem('pandrive.user')
-      window.location.href = '/login'
+      clearSessionAndLogin()
     }
     const errorData = await response.json().catch(() => ({}))
     throw new Error(errorData.message || `API error: ${response.status}`)

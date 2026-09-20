@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type DragEvent, type FormEvent, type MouseEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Archive, CheckCircle, ClipboardPaste, Download, FolderInput, FolderPlus, LayoutGrid, List, RefreshCw, Star, Trash2, Upload, X } from 'lucide-react'
+import { Archive, HardDrive, CheckCircle, ClipboardPaste, Download, FolderInput, FolderPlus, LayoutGrid, List, RefreshCw, Star, Trash2, Upload, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { DummyModal } from '@/components/drive/DummyModal'
@@ -136,6 +136,7 @@ export function AllFilesPage() {
   const { setHeaderActions } = useDriveLayoutActions()
   const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccount[]>([])
   const [selectedTargetAccountId, setSelectedTargetAccountId] = useState('')
+  const accountIdFilter = searchParams.get('accountId') ?? ''
 
   function changeFolderSize(scale: FolderSizeScale) {
     setFolderSizeScale(scale)
@@ -149,7 +150,7 @@ export function AllFilesPage() {
 
     // Add advanced search filters
     const kind = searchParams.get('kind')
-    const accountId = searchParams.get('accountId')
+    const accountId = accountIdFilter
     const minSize = searchParams.get('minSize')
     const maxSize = searchParams.get('maxSize')
     const startDate = searchParams.get('startDate')
@@ -169,7 +170,7 @@ export function AllFilesPage() {
   }
 
   async function loadFolders() {
-    const visiblePath = activeFolderId ? `/folders?parentId=${activeFolderId}` : '/folders'
+    const visiblePath = activeFolderId ? `/folders?parentId=${activeFolderId}${accountIdFilter ? `&accountId=${encodeURIComponent(accountIdFilter)}` : ''}` : (accountIdFilter ? `/folders?accountId=${encodeURIComponent(accountIdFilter)}` : '/folders')
     const [visibleData, allData] = await Promise.all([
       apiFetch<{ folders: BackendFolder[] }>(visiblePath),
       apiFetch<{ folders: BackendFolder[] }>('/folders?all=1'),
@@ -205,7 +206,7 @@ export function AllFilesPage() {
   useEffect(() => {
     loadAll().catch((error) => setMessage(error instanceof Error ? error.message : 'Failed to load files'))
     setSelectedFileIds(new Set())
-  }, [activeFolderId, searchQuery])
+  }, [activeFolderId, searchQuery, accountIdFilter])
 
   useEffect(() => {
     async function loadConnectedAccounts() {
@@ -639,7 +640,7 @@ export function AllFilesPage() {
       loadAll().catch(() => undefined)
     }, 60_000)
     return () => window.clearInterval(timer)
-  }, [activeFolderId, searchQuery])
+  }, [activeFolderId, searchQuery, accountIdFilter])
 
   useEffect(() => {
     const sizeLabels: FolderSizeScale[] = ['xs', 'sm', 'md', 'lg']
@@ -704,7 +705,15 @@ export function AllFilesPage() {
   return (
     <>
       <div onContextMenu={openEmptyContextMenu} className="min-h-[620px] w-full min-w-0">
-      <PageHeader title={activeFolder ? <span className="block min-w-0 truncate"><button className="text-blue-600 hover:underline" onClick={closeFolder}>All Files</button>{folderBreadcrumbs.map((folder, index) => <span key={folder.id}><span className="text-slate-400"> / </span>{index === folderBreadcrumbs.length - 1 ? <span>{folder.name}</span> : <button className="text-blue-600 hover:underline" onClick={() => folder.id && openFolderById(folder.id)}>{folder.name}</button>}</span>)}</span> : 'All Files'} />
+      <PageHeader title={activeFolder ? <span className="block min-w-0 truncate"><button className="text-blue-600 hover:underline" onClick={closeFolder}>{accountIdFilter ? 'Account Files' : 'All Files'}</button>{folderBreadcrumbs.map((folder, index) => <span key={folder.id}><span className="text-slate-400"> / </span>{index === folderBreadcrumbs.length - 1 ? <span>{folder.name}</span> : <button className="text-blue-600 hover:underline" onClick={() => folder.id && openFolderById(folder.id)}>{folder.name}</button>}</span>)}</span> : (accountIdFilter ? 'Account Files' : 'All Files')} />
+      {accountIdFilter ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] text-blue-800">
+          <HardDrive className="h-4 w-4" />
+          <span className="font-semibold">Browsing:</span>
+          <span className="truncate">{connectedAccounts.find((a) => a.id === accountIdFilter)?.email ?? accountIdFilter}</span>
+          <button className="ml-auto text-[12px] font-bold text-blue-700 hover:underline" onClick={() => { const p = new URLSearchParams(searchParams); p.delete('accountId'); p.delete('folderId'); setSearchParams(p) }}>Show all files</button>
+        </div>
+      ) : null}
       {/* Action buttons row — visible on mobile/tablet, hidden on desktop (desktop uses header slot) */}
       <div className="mt-4 flex flex-wrap items-center gap-2 lg:hidden">
         <Button size="sm" onClick={() => setUploadOpen(true)}><Upload className="h-3.5 w-3.5" />Upload</Button>
