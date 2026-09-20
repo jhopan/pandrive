@@ -167,3 +167,22 @@ Set `TUNNEL_TOKEN` di .env (Cloudflare Zero Trust > Networks > Tunnels > Create 
 **Locally-managed (custom penuh):** `.env` -> `TUNNEL_ID=<uuid>` + file `tunnel.yml` di samping binary (lihat `tunnel.yml.example`). Semua mapping hostname/port/path ada di file — bisa banyak domain, beda port, bahkan path routing.
 
 **URL menyesuaikan otomatis:** frontend disajikan dari binary yang sama (satu origin), fetch API pakai `/api/*` relative. OAuth redirect URI di-rebuild dari `X-Forwarded-Host`/`Host` request — jadi akses dari domain mana pun (`drive.jhopan.my.id`, IP, dst), redirect URI ikut domain itu tanpa ganti .env. Catatan: `X-Forwarded-*` dipercaya hanya untuk rebuild localhost redirect; pastikan hanya proxy/tunnel kamu yang bisa mengirim header itu (default tunnel/CF memang begitu).
+
+
+### Docker
+
+```bash
+# Build & run (frontend + backend built inside Docker, multi-arch)
+docker compose up -d
+
+# With Cloudflare Tunnel sidecar:
+echo "TUNNEL_TOKEN=..." >> .env
+docker compose --profile tunnel up -d
+
+# From GHCR (built by CI on tag):
+docker run -d -p 4000:4000 -v ./data:/data \
+  -e JWT_ACCESS_SECRET=... -e TOKEN_ENCRYPTION_KEY=<32-char> \
+  ghcr.io/jhopan/9drive:latest
+```
+
+Data lives in `./data/9drive.db` (bind mount). Backup = copy file.

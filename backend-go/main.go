@@ -1937,7 +1937,12 @@ func main() {
 		}
 	}()
 
-	log.Fatal(http.ListenAndServe("127.0.0.1:"+config.AppPort, app.Router()))
+	bind := os.Getenv("APP_BIND")
+	if bind == "" {
+		bind = "127.0.0.1" // safe default: localhost only; set APP_BIND=0.0.0.0 for direct external access
+	}
+	log.Printf("binding on %s:%s", bind, config.AppPort)
+	log.Fatal(http.ListenAndServe(bind+":"+config.AppPort, app.Router()))
 }
 
 func (a *App) viewFileUrl(w http.ResponseWriter, r *http.Request) {

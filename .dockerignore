@@ -1,0 +1,7 @@
+backend-go/release/
+backend-go/data/
+frontend/node_modules/
+frontend/dist/
+backend-go/dist/
+*.exe
+*.db

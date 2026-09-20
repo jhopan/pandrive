@@ -1,0 +1,29 @@
+services:
+  9drive:
+    build: .
+    container_name: 9drive
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./data:/data
+    environment:
+      - APP_PORT=4000
+      - DATABASE_URL=file:/data/9drive.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:4000}
+      - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET}
+      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-}
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+    restart: unless-stopped
+
+  # Optional: Cloudflare Tunnel sidecar (no TUNNEL_TOKEN in 9drive env needed)
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: 9drive-tunnel
+    command: tunnel run --token ${TUNNEL_TOKEN}
+    depends_on:
+      - 9drive
+    restart: unless-stopped
+    profiles: ["tunnel"]
