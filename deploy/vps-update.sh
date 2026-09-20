@@ -15,7 +15,12 @@ REPO="${GITHUB_REPO:-jhopan/pandrive}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/9drive}"
 SERVICE="${SERVICE:-9drive}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:4000/health}"
-KEEP_RELEASES="${KEEP_RELEASES:-3}"
+LIST_COUNT="${LIST_COUNT:-3}"
+
+# Fail fast before touching anything if the tools we depend on are missing.
+for tool in curl sha256sum systemctl; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "missing required command: ${tool}" >&2; exit 1; }
+done
 
 case "$(uname -m)" in
   x86_64|amd64) ARCH=amd64 ;;
@@ -40,7 +45,7 @@ VERSION_FILE="${INSTALL_DIR}/.installed-version"
 installed_version() {
   if [ -f "$VERSION_FILE" ]; then cat "$VERSION_FILE"; return; fi
   local logged
-  logged="$(journalctl -u "$SERVICE" --no-pager -n 500 2>/dev/null | grep -oE 'PanDrive v[^ ]+' | tail -1 | sed 's/^PanDrive //')"
+  logged="$(journalctl -u "$SERVICE" --no-pager -n 500 2>/dev/null | grep -oE 'PanDrive v[^ ]+' | tail -1 | sed 's/^PanDrive //' || true)"
   if [ -n "$logged" ]; then printf '%s\n' "$logged"; else echo unknown; fi
 }
 # "-deploy" was used by the old scp flow; treat it as the same release.
@@ -69,12 +74,12 @@ done
 
 if [ "$MODE" = list ]; then
   local payload
-  payload="$(curl_json "${API}/releases?per_page=${KEEP_RELEASES}")" || exit 1
+  payload="$(curl_json "${API}/releases?per_page=${LIST_COUNT}")" || exit 1
   grep -oE '"tag_name": *"[^"]+"' <<<"$payload" | sed -E 's/.*"([^"]+)"$/  \1/'
   exit 0
 fi
 
-[ -n "$TAG" ] || TAG="$(latest_tag)"
+[ -n "$TAG" ] || TAG="$(latest_tag || true)"
 [ -n "$TAG" ] || { echo "could not resolve the latest release tag for ${REPO}" >&2; exit 1; }
 
 CURRENT="$(installed_base)"
@@ -125,7 +130,7 @@ for _ in $(seq 1 20); do
   if curl -fsS -m 5 "$HEALTH_URL" 2>/dev/null | grep -q '"status":"ok"'; then
     printf '%s\n' "$TAG" > "$VERSION_FILE"
     echo "healthy: $(installed_version)"
-    ls -1dt /opt/9drive/backup-* 2>/dev/null | tail -n +$((KEEP_RELEASES + 1)) | xargs -r rm -rf
+    echo "previous binary kept at ${ASSET}.prev"
     exit 0
   fi
   sleep 1
