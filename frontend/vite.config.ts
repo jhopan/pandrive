@@ -8,7 +8,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg', 'pwa-192x192.svg', 'pwa-512x512.svg', 'maskable-icon.svg'],
+      includeAssets: ['favicon.png', 'logo-192.png', 'logo.png', 'apple-touch-icon.png', 'maskable-icon.png'],
       manifest: {
         name: 'PanDrive',
         short_name: 'PanDrive',
@@ -20,9 +20,9 @@ export default defineConfig({
         scope: '/',
         orientation: 'portrait-primary',
         icons: [
-          { src: '/pwa-192x192.svg', sizes: '192x192', type: 'image/svg+xml' },
-          { src: '/pwa-512x512.svg', sizes: '512x512', type: 'image/svg+xml' },
-          { src: '/maskable-icon.svg', sizes: '512x512', type: 'image/svg+xml', purpose: 'maskable' },
+          { src: '/logo-192.png', sizes: '192x192', type: 'image/png' },
+          { src: '/logo.png', sizes: '512x512', type: 'image/png' },
+          { src: '/maskable-icon.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
       workbox: {

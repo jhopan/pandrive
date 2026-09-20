@@ -6,7 +6,7 @@ import { DummyModal } from '@/components/drive/DummyModal'
 import { OAuthConfigManager } from '@/components/drive/OAuthConfigManager'
 import { PageHeader } from '@/components/drive/PageHeader'
 import { apiFetch, formatBytes, API_URL } from '@/lib/api'
-import { getGravatarUrl } from '@/lib/gravatar'
+import { getAvatarUrl } from '@/lib/avatar'
 import { getStoredUser, getAccessToken, clearAuthSession } from '@/lib/auth'
 
 type ConnectedAccount = { id: string; provider: string; email: string; displayName?: string | null; status: string; needsReconnect?: boolean; storageAccount?: { totalBytes: string | null; usedBytes: string; availableBytes: string | null; lastSyncedAt: string | null } | null }
@@ -238,7 +238,7 @@ export function SettingsPage() {
 
   useEffect(() => {
     setAvatarError(false)
-    getGravatarUrl(user?.email, 96).then(setProfileImageUrl).catch(() => setProfileImageUrl(''))
+    setProfileImageUrl(getAvatarUrl(user?.email, 96))
   }, [user?.email])
 
   useEffect(() => {

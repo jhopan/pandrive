@@ -1,6 +1,5 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { HardDrive } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -35,7 +34,7 @@ export function LoginPage() {
     <main className="flex min-h-screen items-center justify-center bg-slate-50 p-5">
       <Card className="w-full max-w-md p-6">
         <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-white"><HardDrive className="h-6 w-6" /></div>
+          <img src="/logo.png" alt="PanDrive" width={44} height={44} className="h-11 w-11 rounded-xl object-cover shadow-lg shadow-blue-500/20" />
           <div><h1 className="text-2xl font-extrabold">Login</h1><p className="text-sm text-slate-500">Access your PanDrive gateway.</p></div>
         </div>
         <form onSubmit={submit} className="mt-6 grid gap-4" autoComplete="off">

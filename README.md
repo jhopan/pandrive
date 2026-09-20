@@ -192,6 +192,8 @@ https://drive.renunganbot.qzz.io/connected-accounts/google/callback
 - The policy lists every third-party origin the UI actually loads (iconify, avatar CDNs, cdnjs for the video player, Office/Drive preview frames). Built-in folder icons render from bundled SVG, so no remote icon CDN is required.
 - The service worker deliberately does **not** precache `index.html`: a cached shell would keep enforcing an old CSP/HSTS header long after the server changed it (that is exactly how folder icons stayed blocked after a CSP fix).
 - Changing a password requires the current one (`POST /auth/change-password`); `/auth/me` refuses password changes so a stolen access token cannot lock the owner out. A successful change revokes every other session.
+- The app mark is `frontend/public/logo.png` (512×512), with `logo-192.png`, `apple-touch-icon.png`, `favicon.png` and `maskable-icon.png` derived from it; `BrandLogo`, the login page, `index.html` and the PWA manifest all point at those files.
+- Avatars are generated locally (`src/lib/avatar.ts`, deterministic initial + colour) and folder icons render from bundled SVGs, so the UI needs no third-party image CDN.
 - Do not commit `.env` or SQLite DB files.
 - Keep backend bound to `127.0.0.1` behind Nginx on VPS.
 - Use HTTPS before exposing outside localhost.
