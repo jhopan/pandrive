@@ -22,6 +22,7 @@ import {
   Trash2,
   CopyX,
   BarChart3,
+  History,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { BrandLogo } from '@/components/drive/BrandLogo'
@@ -36,6 +37,7 @@ const menu = [
   { label: 'Trash', icon: Trash2, href: '/trash' },
   { label: 'Duplicates', icon: CopyX, href: '/duplicates' },
   { label: 'Storage', icon: BarChart3, href: '/storage' },
+  { label: 'Activity', icon: History, href: '/activity' },
   { label: 'Quota Tracker', icon: Gauge, href: '/quota' },
   { label: 'Settings', icon: Settings, href: '/settings' },
 ]

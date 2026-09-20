@@ -46,6 +46,7 @@ Implemented and tested:
 - `GET /files/{id}/download`
 - `GET /files/duplicates` (same name + size across accounts)
 - `GET /storage/analyzer` (per-account, by-type, largest files)
+- `GET /activity` (`?action=` `?accountId=` `?limit=` `?offset=`) — audit trail
 - `GET /system/version` (update checker)
 - `POST /upload/resumable`
 - `PUT /upload/resumable/{id}`
@@ -98,6 +99,7 @@ http://localhost:4000/connected-accounts/google/callback
 | **Trash** | Locally deleted files (restorable) plus permanent delete and **Empty Drive trash** per account to actually free quota |
 | **Duplicates** | Finds same-name + same-size files across every account, one-click select of the extra copies, reclaimable bytes total |
 | **Storage** | Analyzer: bytes per account, breakdown by file type, and the 25 largest indexed files |
+| **Activity** | Audit trail: sign-ins (including failed attempts), uploads, downloads, transfers, deletes/restores/purges, syncs and OAuth config changes |
 | **Transfers** | Move or copy files between two connected accounts **server-side** — Google does the copying, so no bytes pass through this server or your bandwidth |
 | **Quota Tracker** | Storage per account, upload routing mode, OAuth config rotation status |
 | **Settings** | Connect Drive, OAuth config manager, Updates (auto update check), backup/restore, security |

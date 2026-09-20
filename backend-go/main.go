@@ -267,8 +267,102 @@ CREATE TABLE IF NOT EXISTS upload_sessions (
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY(target_connected_account_id) REFERENCES connected_accounts(id) ON DELETE SET NULL,
   FOREIGN KEY(folder_id) REFERENCES folders(id) ON DELETE SET NULL
-);`)
+);
+CREATE TABLE IF NOT EXISTS activity_log (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, connected_account_id TEXT,
+  action TEXT NOT NULL, target_type TEXT NOT NULL DEFAULT '', target_id TEXT NOT NULL DEFAULT '',
+  target_name TEXT NOT NULL DEFAULT '', size_bytes INTEGER NOT NULL DEFAULT 0,
+  detail TEXT NOT NULL DEFAULT '', ip TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS activity_log_user_time_idx ON activity_log(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS activity_log_action_idx ON activity_log(user_id, action);
+`)
 	return err
+}
+
+// logActivity records an audit entry. Failures are logged but never break the request
+// that triggered them: auditing must not take down the feature it observes.
+func (a *App) logActivity(r *http.Request, userID, accountID, action, targetType, targetID, targetName string, sizeBytes int64, detail string) {
+	ip := ""
+	if r != nil {
+		ip = clientIP(r)
+	}
+	if _, err := a.DB.Exec(`INSERT INTO activity_log (id,user_id,connected_account_id,action,target_type,target_id,target_name,size_bytes,detail,ip) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		randomID(), userID, nullIfEmpty(accountID), action, targetType, targetID, targetName, sizeBytes, detail, ip); err != nil {
+		log.Printf("activity log failed (%s): %v", action, err)
+	}
+}
+
+// listActivity returns the audit trail, newest first, with optional filters.
+func (a *App) listActivity(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	action := strings.TrimSpace(r.URL.Query().Get("action"))
+	accountID := strings.TrimSpace(r.URL.Query().Get("accountId"))
+	limit := 100
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 && v <= 500 {
+		limit = v
+	}
+	offset := 0
+	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v >= 0 {
+		offset = v
+	}
+
+	where := "WHERE a.user_id=?"
+	args := []any{user.ID}
+	if action != "" && action != "all" {
+		where += " AND a.action=?"
+		args = append(args, action)
+	}
+	if accountID != "" && accountID != "all" {
+		where += " AND a.connected_account_id=?"
+		args = append(args, accountID)
+	}
+
+	var total int
+	if err := a.DB.QueryRow(`SELECT COUNT(*) FROM activity_log a `+where, args...).Scan(&total); err != nil {
+		writeError(w, 500, "ACTIVITY_FAILED", "Unable to count activity.")
+		return
+	}
+
+	query := `SELECT a.id,a.action,a.target_type,a.target_id,a.target_name,a.size_bytes,a.detail,a.ip,COALESCE(a.created_at,''),COALESCE(c.email,'') 
+		FROM activity_log a LEFT JOIN connected_accounts c ON c.id=a.connected_account_id ` + where + ` ORDER BY a.id DESC LIMIT ? OFFSET ?`
+	rows, err := a.DB.Query(query, append(args, limit, offset)...)
+	if err != nil {
+		writeError(w, 500, "ACTIVITY_FAILED", "Unable to read activity: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	entries := []map[string]any{}
+	for rows.Next() {
+		var id, act, targetType, targetID, targetName, detail, ip, createdAt, email string
+		var size int64
+		if err := rows.Scan(&id, &act, &targetType, &targetID, &targetName, &size, &detail, &ip, &createdAt, &email); err != nil {
+			writeError(w, 500, "ACTIVITY_FAILED", "Unable to read activity.")
+			return
+		}
+		entries = append(entries, map[string]any{
+			"id": id, "action": act, "targetType": targetType, "targetId": targetID, "targetName": targetName,
+			"sizeBytes": fmt.Sprint(size), "detail": detail, "ip": ip, "createdAt": createdAt, "accountEmail": email,
+		})
+	}
+
+	// Distinct actions seen, for the filter dropdown.
+	actionRows, err := a.DB.Query(`SELECT DISTINCT action FROM activity_log WHERE user_id=? ORDER BY action`, user.ID)
+	actions := []string{}
+	if err == nil {
+		defer actionRows.Close()
+		for actionRows.Next() {
+			var act string
+			if actionRows.Scan(&act) == nil {
+				actions = append(actions, act)
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "total": total, "limit": limit, "offset": offset, "actions": actions})
 }
 
 func (a *App) ensureInitialAdmin() error {
@@ -395,6 +489,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("PATCH /system/google-config/{id}", a.requireAuth(a.updateGoogleConfig))
 	mux.HandleFunc("POST /system/update", a.requireAuth(a.systemUpdate))
 	mux.HandleFunc("GET /system/version", a.requireAuth(a.updateInfoHandler))
+	mux.HandleFunc("GET /activity", a.requireAuth(a.listActivity))
 	mux.HandleFunc("GET /connected-accounts", a.requireAuth(a.listAccounts))
 	mux.HandleFunc("GET /connected-accounts/google/connect-url", a.requireAuth(a.googleConnectURL))
 	mux.HandleFunc("GET /connected-accounts/google/callback", a.googleCallback)
@@ -483,10 +578,17 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	err := a.DB.QueryRow(`SELECT id,name,email,password_hash FROM users WHERE email = ? AND status = 'active'`, strings.ToLower(strings.TrimSpace(body.Email))).Scan(&user.ID, &user.Name, &user.Email, &hash)
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(body.Password)) != nil {
 		a.loginRecordFailure(ip)
+		// Attribute the attempt to the account when it exists, so the owner sees it in their audit trail.
+		attempted := strings.ToLower(strings.TrimSpace(body.Email))
+		var ownerID string
+		if a.DB.QueryRow(`SELECT id FROM users WHERE email=?`, attempted).Scan(&ownerID) == nil {
+			a.logActivity(r, ownerID, "", "login_failed", "user", ownerID, attempted, 0, "Invalid credentials")
+		}
 		writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password.")
 		return
 	}
 	a.loginRecordSuccess(ip)
+	a.logActivity(r, user.ID, "", "login", "user", user.ID, user.Email, 0, "Signed in")
 	a.respondSession(w, http.StatusOK, user)
 }
 
@@ -528,6 +630,7 @@ func (a *App) refresh(w http.ResponseWriter, r *http.Request) {
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
 	_, _ = a.DB.Exec(`UPDATE user_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL`, time.Now().UTC().Format(time.RFC3339Nano), user.ID)
+	a.logActivity(r, user.ID, "", "logout", "user", user.ID, user.Email, 0, "Signed out")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -604,6 +707,7 @@ func (a *App) saveGoogleConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "GOOGLE_CONFIG_FAILED", "Unable to save Google config.")
 		return
 	}
+	a.logActivity(r, user.ID, "", "oauth_config_add", "config", "", body.Label, 0, "OAuth config added")
 	writeJSON(w, http.StatusCreated, map[string]string{"message": "Google OAuth config added."})
 }
 
@@ -624,7 +728,10 @@ func (a *App) deleteGoogleConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "LAST_CONFIG", "Cannot delete the last active config.")
 		return
 	}
+	var cfgLabel string
+	_ = a.DB.QueryRow(`SELECT COALESCE(label,'') FROM provider_configs WHERE id=?`, configID).Scan(&cfgLabel)
 	_, _ = a.DB.Exec(`DELETE FROM provider_configs WHERE id=?`, configID)
+	a.logActivity(r, user.ID, "", "oauth_config_delete", "config", configID, cfgLabel, 0, "OAuth config deleted")
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Config deleted."})
 }
 
@@ -1407,6 +1514,7 @@ func (a *App) resumableChunk(w http.ResponseWriter, r *http.Request) {
 	// Approximate local quota update; corrected at next quota sync.
 	_, _ = a.DB.Exec(`UPDATE storage_accounts SET available_bytes=MAX(0, available_bytes-?), used_bytes=used_bytes+? WHERE connected_account_id=?`, size, size, accountID)
 	_, _ = a.DB.Exec(`UPDATE upload_sessions SET status='completed',completed_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), id)
+	a.logActivity(r, user.ID, accountID, "file_upload", "file", uploaded.ID, uploaded.Name, size, "Uploaded to Drive")
 	writeJSON(w, 200, map[string]string{"status": "completed"})
 }
 
@@ -1752,6 +1860,7 @@ func (a *App) syncGoogleFiles(w http.ResponseWriter, r *http.Request) {
 		}
 		results = append(results, map[string]any{"accountId": accountID, "created": created, "updated": updated})
 	}
+	a.logActivity(r, user.ID, requestedID, "sync_files", "account", requestedID, "", 0, fmt.Sprintf("Synced %d account(s)", len(results)))
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "results": results})
 }
 
@@ -1876,6 +1985,7 @@ func (a *App) googleCallback(w http.ResponseWriter, r *http.Request) {
 			log.Printf("auto file sync after connect failed for account %s: %v", accountID, err)
 		}
 	}()
+	a.logActivity(r, userID, accountID, "account_connect", "account", accountID, profile.Email, 0, "Google Drive account connected")
 	if wantsJSON {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	} else {
@@ -1916,6 +2026,11 @@ func (a *App) updateMe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	detail := "Profile updated"
+	if body.Password != "" {
+		detail = "Profile and password updated"
+	}
+	a.logActivity(r, user.ID, "", "account_update", "user", user.ID, body.Email, 0, detail)
 	user.Name = body.Name
 	user.Email = body.Email
 	a.respondSession(w, http.StatusOK, user)
@@ -2470,6 +2585,11 @@ func (a *App) transferFile(w http.ResponseWriter, r *http.Request) {
 		_ = a.syncAccountQuota(c, body.TargetAccountID)
 	}()
 
+	mode := "Copied"
+	if sourceDeleted {
+		mode = "Moved"
+	}
+	a.logActivity(r, user.ID, sourceAccountID, "file_transfer", "file", fileID, name, size, fmt.Sprintf("%s to %s (server-side)", mode, targetEmail))
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "newFileId": newFileID, "moved": sourceDeleted, "sourceInTrash": sourceDeleted})
 }
 
@@ -2486,6 +2606,10 @@ func (a *App) restoreFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "FILE_NOT_FOUND", "No deleted file with that id.")
 		return
 	}
+	var name, accountID string
+	var size int64
+	_ = a.DB.QueryRow(`SELECT name,connected_account_id,size_bytes FROM files WHERE id=? AND user_id=?`, fileID, user.ID).Scan(&name, &accountID, &size)
+	a.logActivity(r, user.ID, accountID, "file_restore", "file", fileID, name, size, "Restored from trash")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -2509,7 +2633,11 @@ func (a *App) purgeFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 502, "PURGE_DRIVE_FAILED", "Drive delete failed: "+err.Error())
 		return
 	}
+	var purgedName string
+	var purgedSize int64
+	_ = a.DB.QueryRow(`SELECT name,size_bytes FROM files WHERE id=? AND user_id=?`, fileID, user.ID).Scan(&purgedName, &purgedSize)
 	_, _ = a.DB.Exec(`DELETE FROM files WHERE id=? AND user_id=?`, fileID, user.ID)
+	a.logActivity(r, user.ID, accountID, "file_purge", "file", fileID, purgedName, purgedSize, "Permanently deleted from Drive")
 	go func() {
 		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -2549,6 +2677,7 @@ func (a *App) emptyAccountTrash(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 502, "EMPTY_TRASH_FAILED", fmt.Sprintf("Drive rejected empty trash (%d): %s", resp.StatusCode, string(body)))
 		return
 	}
+	a.logActivity(r, user.ID, accountID, "trash_empty", "account", accountID, "", 0, "Drive trash emptied")
 	go func() {
 		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -2788,6 +2917,10 @@ func (a *App) deleteFile(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
 	fileID := r.PathValue("id")
 	_, _ = a.DB.Exec(`UPDATE files SET status='deleted', deleted_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`, fileID, user.ID)
+	var name, accountID string
+	var size int64
+	_ = a.DB.QueryRow(`SELECT name,connected_account_id,size_bytes FROM files WHERE id=? AND user_id=?`, fileID, user.ID).Scan(&name, &accountID, &size)
+	a.logActivity(r, user.ID, accountID, "file_delete", "file", fileID, name, size, "Moved to trash")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
