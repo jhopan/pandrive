@@ -129,6 +129,9 @@ export function AllFilesPage() {
   const [inviteTargetId, setInviteTargetId] = useState('')
   const [inviteMessage, setInviteMessage] = useState('')
   const [inviting, setInviting] = useState(false)
+  // Drive is the source of truth for who has access; local invite rows only supply the revoke id.
+  const [accessList, setAccessList] = useState<{ email: string; role: string; permissionId: string; inviteId?: string; isOwner: boolean }[]>([])
+  const [accessLoading, setAccessLoading] = useState(false)
   const previewVideoRef = useRef<HTMLVideoElement | null>(null)
   const [folderSizeScale, setFolderSizeScale] = useState<FolderSizeScale>(() => {
     const v = localStorage.getItem('pandrive:folder-size')
@@ -574,7 +577,9 @@ export function AllFilesPage() {
     if (!activeFile?.id) return
     setInviteTargetType('file')
     setInviteTargetId(activeFile.id)
+    setInviteMessage('')
     setInviteOpen(true)
+    loadAccess('file', activeFile.id).catch(() => undefined)
     setContextMenu({ x: 0, y: 0, file: null })
   }
 
@@ -582,7 +587,9 @@ export function AllFilesPage() {
     if (!activeFolderForMenu?.id) return
     setInviteTargetType('folder')
     setInviteTargetId(activeFolderForMenu.id)
+    setInviteMessage('')
     setInviteOpen(true)
+    loadAccess('folder', activeFolderForMenu.id).catch(() => undefined)
     setFolderContextMenu({ x: 0, y: 0, folder: null })
   }
 
@@ -598,16 +605,50 @@ export function AllFilesPage() {
     setFolderContextMenu({ x: 0, y: 0, folder: null })
   }
 
+  async function loadAccess(targetType: 'file' | 'folder', targetId: string) {
+    setAccessLoading(true)
+    try {
+      const [permissions, invites] = await Promise.all([
+        apiFetch<{ permissions: { id: string; role: string; emailAddress?: string; type: string }[] }>(`/permissions?targetType=${targetType}&targetId=${encodeURIComponent(targetId)}`),
+        apiFetch<{ invites: { id: string; email: string; role: string; targetId: string }[] }>('/invites'),
+      ])
+      const localByEmail = new Map(invites.invites.filter((i) => i.targetId === targetId).map((i) => [i.email, i.id]))
+      setAccessList(permissions.permissions.map((p) => ({
+        email: p.emailAddress || (p.type === 'anyone' ? 'Anyone with the link' : p.type),
+        role: p.role,
+        permissionId: p.id,
+        inviteId: p.emailAddress ? localByEmail.get(p.emailAddress) : undefined,
+        isOwner: p.role === 'owner',
+      })))
+    } catch {
+      setAccessList([])
+    } finally {
+      setAccessLoading(false)
+    }
+  }
+
+  async function revokeAccess(email: string, inviteId?: string) {
+    if (!inviteId) return
+    try {
+      await apiFetch(`/invites/${inviteId}`, { method: 'DELETE' })
+      setInviteMessage(`Access removed for ${email}.`)
+      await loadAccess(inviteTargetType, inviteTargetId)
+    } catch (error) {
+      setInviteMessage(error instanceof Error ? error.message : 'Failed to revoke access')
+    }
+  }
+
   async function sendInvite(event: FormEvent) {
     event.preventDefault()
     if (!inviteTargetId) return
     setInviting(true)
     setInviteMessage('')
     try {
-      await apiFetch('/invites', { method: 'POST', body: JSON.stringify({ email: inviteEmail, role: inviteRole, targetType: inviteTargetType, targetId: inviteTargetId }) })
+      const granted = await apiFetch<{ email: string; role: string; targetName: string }>('/invites', { method: 'POST', body: JSON.stringify({ email: inviteEmail, role: inviteRole, targetType: inviteTargetType, targetId: inviteTargetId }) })
       setInviteEmail('')
       setInviteRole('viewer')
-      setInviteMessage('Invite saved. Member will appear in Shared.')
+      setInviteMessage(`Access granted to ${granted.email} as ${granted.role}.`)
+      await loadAccess(inviteTargetType, inviteTargetId)
       window.dispatchEvent(new Event('pandrive:invites-changed'))
     } catch (error) {
       setInviteMessage(error instanceof Error ? error.message : 'Failed to send invite')
@@ -892,6 +933,27 @@ export function AllFilesPage() {
           <label className="grid gap-2 text-sm font-semibold">Email Address<Input type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="member@example.com" required /></label>
           <label className="grid gap-2 text-sm font-semibold">Role<select className="h-11 rounded-xl border border-slate-200 px-3 text-sm" value={inviteRole} onChange={(event) => setInviteRole(event.target.value)}><option value="viewer">Can view</option><option value="editor">Can edit</option></select></label>
           {inviteMessage ? <p className="rounded-xl bg-blue-50 p-3 text-sm font-semibold text-blue-700">{inviteMessage}</p> : null}
+          <div className="rounded-xl border border-slate-100 p-3">
+            <p className="text-[12px] font-bold uppercase text-slate-400">People with access</p>
+            {accessLoading ? <p className="mt-2 text-[12px] text-slate-500">Loading...</p> : accessList.length === 0 ? (
+              <p className="mt-2 text-[12px] text-slate-500">No access entries found.</p>
+            ) : (
+              <ul className="mt-2 grid gap-1.5">
+                {accessList.map((entry) => (
+                  <li key={entry.permissionId} className="flex items-center justify-between gap-2 text-[12px]">
+                    <span className="min-w-0 truncate">
+                      <span className="font-semibold">{entry.email}</span>
+                      <span className="text-slate-500"> · {entry.role}</span>
+                    </span>
+                    {entry.isOwner ? <span className="shrink-0 text-[11px] font-bold text-slate-400">Owner</span>
+                      : entry.inviteId ? (
+                        <button type="button" onClick={() => revokeAccess(entry.email, entry.inviteId)} className="shrink-0 rounded-lg px-2 py-1 text-[11px] font-bold text-red-600 hover:bg-red-50">Revoke</button>
+                      ) : <span className="shrink-0 text-[11px] text-slate-400">external</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           <div className="flex justify-end gap-3 pt-2"><Button type="button" variant="outline" onClick={() => setInviteOpen(false)}>Cancel</Button><Button disabled={inviting}>{inviting ? 'Sending...' : 'Send Invite'}</Button></div>
         </form>
       </DummyModal>

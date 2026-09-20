@@ -52,6 +52,8 @@ Implemented and tested:
 - `GET /search` (`?q=` `?kind=` `?accountId=` `?folderId=` `?minSize=` `?maxSize=` `?startDate=` `?endDate=` `?starred=` `?sort=` `?limit=` `?offset=`) — results, total bytes and facets
 - `POST /files/{id}/public-link` (create public Drive permission + link)
 - `GET /shares` / `DELETE /shares/{id}` (list / revoke public links)
+- `GET /permissions?targetType=&targetId=` (live Drive access list for a file or folder)
+- `POST /invites` / `GET /invites` / `DELETE /invites/{id}` (grant, list and revoke per-person access)
 - `GET /uploads/queue` (`?status=`) / `POST /uploads/queue/{id}/cancel` / `DELETE /uploads/queue/{id}`
 - `GET /system/health` (runtime, database, backup, tunnel, accounts, OAuth quota)
 - `GET /system/rate-limits` (live request rate, history, per-config window state)
@@ -111,7 +113,7 @@ http://localhost:4000/connected-accounts/google/callback
 | **Duplicates** | Finds same-name + same-size files across every account, one-click select of the extra copies, reclaimable bytes total |
 | **Storage** | Analyzer: bytes per account, breakdown by file type, and the 25 largest indexed files |
 | **Activity** | Audit trail: sign-ins (including failed attempts), uploads, downloads, transfers, deletes/restores/purges, syncs and OAuth config changes |
-| **Shared** | Every file with a public link: copy, open or revoke. Revoking removes the Drive permission immediately |
+| **Shared** | **People with access** (per-person Drive permissions with revoke) and **Public links** (anyone-with-the-link, copy/open/revoke) |
 | **Uploads** | Resumable upload queue: what is running, what finished, what failed, plus cancel and clear |
 | **Health** | Uptime, database size and writability, backup freshness, tunnel mode, per-account token/sync state, OAuth rotation quota |
 | **Rate Limits** | Live Google API request rate in the 100s window, peak, per-second sparkline, per-config window countdown and the switch threshold |

@@ -184,6 +184,13 @@ func loadConfig() Config {
 	}
 }
 
+// Sentinel errors for share targets: the message is shown to the user, so keep it actionable.
+var (
+	errTargetNotFound    = errors.New("target not found")
+	errTargetNotMirrored = errors.New("this folder is not mirrored to Drive, so it cannot be shared")
+	errTargetUnavailable = errors.New("unable to resolve the target")
+)
+
 // processStartedAt powers the uptime reported by /system/health.
 var processStartedAt = time.Now()
 
@@ -289,6 +296,14 @@ CREATE TABLE IF NOT EXISTS share_links (
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS share_links_user_idx ON share_links(user_id, revoked_at);
+CREATE TABLE IF NOT EXISTS permission_grants (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, connected_account_id TEXT NOT NULL,
+  target_type TEXT NOT NULL, target_id TEXT NOT NULL, provider_file_id TEXT NOT NULL,
+  email TEXT NOT NULL, role TEXT NOT NULL, permission_id TEXT NOT NULL DEFAULT '',
+  revoked_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS permission_grants_user_idx ON permission_grants(user_id, revoked_at);
 CREATE INDEX IF NOT EXISTS activity_log_action_idx ON activity_log(user_id, action);
 `)
 	if err != nil {
@@ -537,6 +552,10 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("GET /starred", a.requireAuth(a.listStarred))
 	mux.HandleFunc("POST /files/{id}/star", a.requireAuth(a.starFile))
 	mux.HandleFunc("POST /folders/{id}/star", a.requireAuth(a.starFolder))
+	mux.HandleFunc("GET /permissions", a.requireAuth(a.listPermissions))
+	mux.HandleFunc("POST /invites", a.requireAuth(a.grantAccess))
+	mux.HandleFunc("GET /invites", a.requireAuth(a.listInvites))
+	mux.HandleFunc("DELETE /invites/{id}", a.requireAuth(a.revokeInvite))
 	mux.HandleFunc("GET /shares", a.requireAuth(a.listShares))
 	mux.HandleFunc("DELETE /shares/{id}", a.requireAuth(a.revokeShare))
 	mux.HandleFunc("GET /uploads/queue", a.requireAuth(a.uploadQueue))
@@ -1253,7 +1272,7 @@ func (a *App) listFolders(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
 	parentID := r.URL.Query().Get("parentId")
 	accountID := r.URL.Query().Get("accountId")
-	query := `SELECT id,name,parent_id,color,created_at,updated_at,COALESCE(starred,0) FROM folders WHERE user_id=? AND deleted_at IS NULL`
+	query := `SELECT id,name,parent_id,color,created_at,updated_at,COALESCE(starred,0),COALESCE(provider_folder_id,''),COALESCE(connected_account_id,'') FROM folders WHERE user_id=? AND deleted_at IS NULL`
 	args := []any{user.ID}
 	if parentID == "" {
 		query += ` AND parent_id IS NULL`
@@ -1275,10 +1294,10 @@ func (a *App) listFolders(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	folders := make([]map[string]any, 0)
 	for rows.Next() {
-		var id, name, color, createdAt, updatedAt string
+		var id, name, color, createdAt, updatedAt, providerFolderID, connectedAccountID string
 		var starred int
 		var parent sql.NullString
-		if err := rows.Scan(&id, &name, &parent, &color, &createdAt, &updatedAt, &starred); err != nil {
+		if err := rows.Scan(&id, &name, &parent, &color, &createdAt, &updatedAt, &starred, &providerFolderID, &connectedAccountID); err != nil {
 			writeError(w, 500, "FOLDERS_FAILED", "Unable to read folders.")
 			return
 		}
@@ -1286,7 +1305,7 @@ func (a *App) listFolders(w http.ResponseWriter, r *http.Request) {
 		if parent.Valid {
 			parentID = parent.String
 		}
-		folders = append(folders, map[string]any{"id": id, "name": name, "parentId": parentID, "color": color, "createdAt": createdAt, "updatedAt": updatedAt, "starred": starred == 1})
+		folders = append(folders, map[string]any{"id": id, "name": name, "parentId": parentID, "color": color, "createdAt": createdAt, "updatedAt": updatedAt, "starred": starred == 1, "providerFolderId": providerFolderID, "connectedAccountId": connectedAccountID})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"folders": folders})
 }
@@ -2885,6 +2904,250 @@ func (a *App) publicPermission(w http.ResponseWriter, r *http.Request) {
 	}
 	a.logActivity(r, user.ID, accountID, "file_share", "file", fileID, name, size, "Public link created")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "url": link, "shareId": shareID})
+}
+
+// drivePermissionRole maps a UI role onto a Drive role.
+func drivePermissionRole(role string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "viewer", "reader", "view":
+		return "reader", true
+	case "editor", "writer", "edit":
+		return "writer", true
+	case "commenter", "comment":
+		return "commenter", true
+	}
+	return "", false
+}
+
+// resolveShareTarget turns a local file/folder id into the Drive id + account that owns it.
+// Only user-actionable problems are returned verbatim; driver errors are logged and replaced
+// with a generic message so a raw SQL error never reaches the client.
+func (a *App) resolveShareTarget(userID, targetType, targetID string) (providerFileID, accountID, name string, err error) {
+	switch targetType {
+	case "folder":
+		var providerFolderID sql.NullString
+		// COALESCE: a locally created folder has no account and no Drive id (both NULL).
+		err = a.DB.QueryRow(`SELECT COALESCE(name,''), COALESCE(provider_folder_id,''), COALESCE(connected_account_id,'') FROM folders WHERE id=? AND user_id=? AND deleted_at IS NULL`, targetID, userID).Scan(&name, &providerFolderID, &accountID)
+		if err == nil && (!providerFolderID.Valid || providerFolderID.String == "") {
+			return "", "", "", errTargetNotMirrored
+		}
+		if err == nil {
+			providerFileID = providerFolderID.String
+		}
+	default: // file
+		err = a.DB.QueryRow(`SELECT name, COALESCE(provider_file_id,''), COALESCE(connected_account_id,'') FROM files WHERE id=? AND user_id=? AND status='active'`, targetID, userID).Scan(&name, &providerFileID, &accountID)
+	}
+	if err == sql.ErrNoRows {
+		return "", "", "", errTargetNotFound
+	}
+	if err != nil {
+		log.Printf("resolve share target failed (%s %s): %v", targetType, targetID, err)
+		return "", "", "", errTargetUnavailable
+	}
+	return providerFileID, accountID, name, nil
+}
+
+// listPermissions reports Drive's own view of who can access a file or folder —
+// the source of truth, not our local grant table.
+func (a *App) listPermissions(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	targetType := r.URL.Query().Get("targetType")
+	if targetType != "folder" {
+		targetType = "file"
+	}
+	targetID := strings.TrimSpace(r.URL.Query().Get("targetId"))
+	if targetID == "" {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "targetId is required.")
+		return
+	}
+	providerFileID, accountID, name, err := a.resolveShareTarget(user.ID, targetType, targetID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "TARGET_NOT_FOUND", err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	accessToken, err := a.getGoogleToken(ctx, accountID, false)
+	if err != nil {
+		writeError(w, 500, "PERMISSIONS_FAILED", "Unable to read account token.")
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.GoogleDriveAPIURL+"/files/"+url.PathEscape(providerFileID)+"/permissions?fields=permissions(id,type,role,emailAddress,displayName,domain)", nil)
+	if err != nil {
+		writeError(w, 500, "PERMISSIONS_FAILED", "Unable to build Drive request.")
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := a.HTTPClient.Do(req)
+	if err != nil {
+		writeError(w, 502, "PERMISSIONS_FAILED", "Drive request failed.")
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		writeError(w, 502, "PERMISSIONS_FAILED", fmt.Sprintf("Drive rejected the request (%d): %s", resp.StatusCode, string(body)))
+		return
+	}
+	var out struct {
+		Permissions []map[string]any `json:"permissions"`
+	}
+	_ = json.Unmarshal(body, &out)
+	if out.Permissions == nil {
+		out.Permissions = []map[string]any{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"targetName": name, "permissions": out.Permissions, "total": len(out.Permissions)})
+}
+
+// grantAccess shares a Drive file or folder with a specific Google account.
+func (a *App) grantAccess(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	var body struct {
+		Email      string `json:"email"`
+		Role       string `json:"role"`
+		TargetType string `json:"targetType"`
+		TargetID   string `json:"targetId"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body.")
+		return
+	}
+	email := strings.TrimSpace(strings.ToLower(body.Email))
+	if !strings.Contains(email, "@") || strings.HasPrefix(email, "@") || strings.HasSuffix(email, "@") {
+		writeError(w, http.StatusBadRequest, "BAD_EMAIL", "A valid email address is required.")
+		return
+	}
+	role, ok := drivePermissionRole(body.Role)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "BAD_ROLE", "Role must be viewer, commenter or editor.")
+		return
+	}
+	targetType := "file"
+	if body.TargetType == "folder" {
+		targetType = "folder"
+	}
+	if strings.TrimSpace(body.TargetID) == "" {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "targetId is required.")
+		return
+	}
+
+	providerFileID, accountID, name, err := a.resolveShareTarget(user.ID, targetType, body.TargetID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "TARGET_NOT_FOUND", err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	accessToken, err := a.getGoogleToken(ctx, accountID, false)
+	if err != nil {
+		writeError(w, 500, "SHARE_FAILED", "Unable to read account token.")
+		return
+	}
+
+	payload, _ := json.Marshal(map[string]any{"role": role, "type": "user", "emailAddress": email})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.GoogleDriveAPIURL+"/files/"+url.PathEscape(providerFileID)+"/permissions?fields=id&sendNotificationEmail=true", bytes.NewReader(payload))
+	if err != nil {
+		writeError(w, 500, "SHARE_FAILED", "Unable to build Drive request.")
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.HTTPClient.Do(req)
+	if err != nil {
+		writeError(w, 502, "SHARE_FAILED", "Drive request failed.")
+		return
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<15))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		writeError(w, 502, "SHARE_FAILED", fmt.Sprintf("Drive rejected the share (%d): %s", resp.StatusCode, string(respBody)))
+		return
+	}
+	var perm struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(respBody, &perm)
+
+	grantID := randomID()
+	if _, err := a.DB.Exec(`INSERT INTO permission_grants (id,user_id,connected_account_id,target_type,target_id,provider_file_id,email,role,permission_id) VALUES (?,?,?,?,?,?,?,?,?)`,
+		grantID, user.ID, accountID, targetType, body.TargetID, providerFileID, email, role, perm.ID); err != nil {
+		writeError(w, 500, "SHARE_FAILED", "Access granted in Drive but could not be saved locally.")
+		return
+	}
+	a.logActivity(r, user.ID, accountID, "permission_grant", targetType, body.TargetID, name, 0, fmt.Sprintf("Granted %s to %s", role, email))
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "inviteId": grantID, "email": email, "role": role, "targetName": name})
+}
+
+// listInvites returns active per-person grants.
+func (a *App) listInvites(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	rows, err := a.DB.Query(`SELECT g.id,g.target_type,g.target_id,g.email,g.role,COALESCE(g.created_at,''),
+		COALESCE(f.name, fo.name, ''), COALESCE(c.email,'')
+		FROM permission_grants g
+		LEFT JOIN files f ON g.target_type='file' AND f.id=g.target_id
+		LEFT JOIN folders fo ON g.target_type='folder' AND fo.id=g.target_id
+		LEFT JOIN connected_accounts c ON c.id=g.connected_account_id
+		WHERE g.user_id=? AND g.revoked_at IS NULL
+		ORDER BY g.id DESC`, user.ID)
+	if err != nil {
+		writeError(w, 500, "INVITES_FAILED", "Unable to list invites: "+err.Error())
+		return
+	}
+	defer rows.Close()
+	invites := []map[string]any{}
+	for rows.Next() {
+		var id, targetType, targetID, email, role, createdAt, name, accountEmail string
+		if err := rows.Scan(&id, &targetType, &targetID, &email, &role, &createdAt, &name, &accountEmail); err != nil {
+			writeError(w, 500, "INVITES_FAILED", "Unable to read invites.")
+			return
+		}
+		invites = append(invites, map[string]any{"id": id, "targetType": targetType, "targetId": targetID,
+			"email": email, "role": role, "createdAt": createdAt, "targetName": name, "accountEmail": accountEmail})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"invites": invites, "total": len(invites)})
+}
+
+// revokeInvite removes a per-person Drive permission.
+func (a *App) revokeInvite(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	grantID := r.PathValue("id")
+	var accountID, providerFileID, permissionID, email, targetType, targetID string
+	err := a.DB.QueryRow(`SELECT connected_account_id,provider_file_id,permission_id,email,target_type,target_id FROM permission_grants WHERE id=? AND user_id=? AND revoked_at IS NULL`, grantID, user.ID).Scan(&accountID, &providerFileID, &permissionID, &email, &targetType, &targetID)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "INVITE_NOT_FOUND", "Invite not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "REVOKE_FAILED", "Unable to load invite.")
+		return
+	}
+
+	if permissionID != "" {
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+		if accessToken, err := a.getGoogleToken(ctx, accountID, false); err == nil {
+			req, err := http.NewRequestWithContext(ctx, http.MethodDelete, a.GoogleDriveAPIURL+"/files/"+url.PathEscape(providerFileID)+"/permissions/"+url.PathEscape(permissionID), nil)
+			if err == nil {
+				req.Header.Set("Authorization", "Bearer "+accessToken)
+				if resp, err := a.HTTPClient.Do(req); err == nil {
+					resp.Body.Close()
+				} else {
+					// The permission may already be gone; surfacing the Drive error would block the
+					// local cleanup, so the grant is marked revoked and the failure is logged.
+					log.Printf("drive permission revoke failed for %s: %v", permissionID, err)
+				}
+			}
+		} else {
+			log.Printf("drive permission revoke skipped, token unavailable for account %s: %v", accountID, err)
+		}
+	}
+	_, _ = a.DB.Exec(`UPDATE permission_grants SET revoked_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`, grantID, user.ID)
+	var name string
+	_ = a.DB.QueryRow(`SELECT COALESCE(name,'') FROM files WHERE id=?`, targetID).Scan(&name)
+	a.logActivity(r, user.ID, accountID, "permission_revoke", targetType, targetID, name, 0, "Revoked access for "+email)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // listShares returns active public links.
