@@ -36,7 +36,7 @@ export function LoginPage() {
       <Card className="w-full max-w-md p-6">
         <div className="flex items-center gap-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-white"><HardDrive className="h-6 w-6" /></div>
-          <div><h1 className="text-2xl font-extrabold">Login</h1><p className="text-sm text-slate-500">Access your 9Drive gateway.</p></div>
+          <div><h1 className="text-2xl font-extrabold">Login</h1><p className="text-sm text-slate-500">Access your PanDrive gateway.</p></div>
         </div>
         <form onSubmit={submit} className="mt-6 grid gap-4" autoComplete="off">
           <label className="grid gap-2 text-sm font-semibold">Email<Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="off" /></label>
@@ -44,6 +44,9 @@ export function LoginPage() {
           {error ? <p className="rounded-xl bg-red-50 p-3 text-sm text-red-600">{error}</p> : null}
           <Button disabled={loading}>{loading ? 'Logging in...' : 'Login'}</Button>
         </form>
+        <p className="mt-6 text-center text-xs text-slate-400">
+          PanDrive by <a href="https://github.com/jhopan" target="_blank" rel="noopener noreferrer" className="font-semibold hover:underline">JhopanStore</a>
+        </p>
       </Card>
     </main>
   )

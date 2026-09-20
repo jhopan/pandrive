@@ -6,7 +6,7 @@
 
 ```bash
 # ❌ FORBIDDEN - destroys user data
-rm -f data/9drive.db*
+rm -f data/pandrive.db*
 
 # ✅ ALLOWED - run unit tests (use :memory: DB)
 go test ./...
@@ -17,7 +17,7 @@ go test ./...
 
 ## Database Location
 
-**Production DB:** `data/9drive.db` (SQLite with WAL mode)
+**Production DB:** `data/pandrive.db` (SQLite with WAL mode)
 
 **Contains:**
 - User accounts (bcrypt passwords)
@@ -51,7 +51,7 @@ go run .
 **Create backup:**
 ```bash
 ./backup.sh
-# Creates: backups/9drive_YYYYMMDD_HHMMSS.db
+# Creates: backups/pandrive_YYYYMMDD_HHMMSS.db
 # Keeps last 7 backups
 ```
 
@@ -61,7 +61,7 @@ go run .
 ls -la backups/
 
 # Restore
-cp backups/9drive_20260830_123456.db data/9drive.db
+cp backups/pandrive_20260830_123456.db data/pandrive.db
 ```
 
 ## Current Setup
@@ -85,7 +85,7 @@ go test ./...
 go run .
 
 # Check DB contents
-sqlite3 data/9drive.db "SELECT email, name FROM users"
+sqlite3 data/pandrive.db "SELECT email, name FROM users"
 
 # Backup database
 ./backup.sh
@@ -98,6 +98,6 @@ sqlite3 data/9drive.db "SELECT email, name FROM users"
 ✅ Read code before editing
 ✅ Run `go test` before commit
 
-❌ NEVER `rm data/9drive.db`
+❌ NEVER `rm data/pandrive.db`
 ❌ NEVER commit `.env` or `*.db` files
 ❌ NEVER drop tables in production

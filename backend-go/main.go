@@ -148,7 +148,7 @@ func dataDirFromURL(databaseURL string) string {
 	if path == "" {
 		path = u.Opaque
 	}
-	// Strip query part of opaque form file:data/9drive.db?_pragma=...
+	// Strip query part of opaque form file:data/pandrive.db?_pragma=...
 	if i := strings.Index(path, "?"); i >= 0 {
 		path = path[:i]
 	}
@@ -164,7 +164,7 @@ func loadConfig() Config {
 		return fallback
 	}
 	return Config{
-		DatabaseURL:        getenv("DATABASE_URL", "file:data/9drive.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"),
+		DatabaseURL:        getenv("DATABASE_URL", "file:data/pandrive.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"),
 		AppPort:            getenv("APP_PORT", "4000"),
 		FrontendURL:        getenv("FRONTEND_URL", "http://localhost:5173"),
 		JWTSecret:          getenv("JWT_ACCESS_SECRET", "change-this-jwt-secret-before-production"),
@@ -1858,7 +1858,7 @@ func main() {
 			log.Fatal(" refusing to start with default JWT_ACCESS_SECRET/TOKEN_ENCRYPTION_KEY. Set 32-byte TOKEN_ENCRYPTION_KEY and a strong JWT_ACCESS_SECRET in .env")
 		}
 	}
-	log.Printf("9Drive %s listening on http://127.0.0.1:%s", buildVersion, config.AppPort)
+	log.Printf("PanDrive %s listening on http://127.0.0.1:%s", buildVersion, config.AppPort)
 
 	// Cloudflare Tunnel (optional): set TUNNEL_TOKEN (managed tunnel) or leave unset.
 	if token := os.Getenv("TUNNEL_TOKEN"); token != "" {
@@ -2086,7 +2086,7 @@ func (a *App) batchDownloadZip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="9drive-download.zip"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="pandrive-download.zip"`)
 	
 	zw := zip.NewWriter(w)
 	var errorLog strings.Builder
@@ -2143,7 +2143,7 @@ func (a *App) batchDownloadZip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if errorLog.Len() > 0 {
-		f, _ := zw.Create("9drive-errors.txt")
+		f, _ := zw.Create("pandrive-errors.txt")
 		io.WriteString(f, errorLog.String())
 	}
 	zw.Close()

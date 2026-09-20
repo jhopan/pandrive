@@ -77,7 +77,7 @@ function SystemInfoDropdown({ storage }: { storage: any }) {
           <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5"><HardDrive className="h-3.5 w-3.5 text-blue-500" /> Storage Engine</h4>
           <div className="mt-2 text-xs text-slate-600 space-y-1 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
             <p>• <b>DB Type:</b> SQLite (Local Database)</p>
-            <p>• <b>Upload Folder:</b> Google Drive dedicated <code>9drive</code></p>
+            <p>• <b>Upload Folder:</b> Google Drive dedicated <code>pandrive</code></p>
             <p>• <b>Max Upload Size:</b> 5 GB per stream</p>
           </div>
         </div>
@@ -112,7 +112,7 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
     <aside className="flex h-full w-64 flex-col border-slate-200/60 bg-slate-50/40 backdrop-blur-xl p-4 lg:border-r">
       <div className="flex items-center gap-2.5 pb-3 pt-1">
         <BrandLogo className="h-8 w-8" />
-        <span className="text-xl font-extrabold tracking-tight bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">9Drive</span>
+        <span className="text-xl font-extrabold tracking-tight bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">PanDrive</span>
       </div>
 
       <div className="flex items-center gap-2.5 border-y border-slate-200/60 py-3 my-3">
@@ -154,6 +154,9 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
         <Button variant="danger" size="sm" className="mt-3 w-full justify-start h-10 px-3 text-[13px] font-bold" onClick={onLogout}>
           <LogOut className="h-4 w-4" />Log Out
         </Button>
+        <p className="mt-2 text-center text-[10px] text-slate-400">
+          PanDrive by <a href="https://github.com/jhopan" target="_blank" rel="noopener noreferrer" className="font-semibold hover:underline">JhopanStore</a>
+        </p>
       </div>
     </aside>
   )
@@ -217,7 +220,7 @@ export function DriveLayout() {
   const { uploadProgress, setUploadProgress, retryFailedUpload, pauseFile, resumeFile } = useUpload()
   const [uploadProgressCollapsed, setUploadProgressCollapsed] = useState(false)
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    const saved = localStorage.getItem('9drive:theme')
+    const saved = localStorage.getItem('pandrive:theme')
     if (saved === 'light' || saved === 'dark') return saved
     return 'dark'
   })
@@ -253,7 +256,7 @@ export function DriveLayout() {
       root.classList.add('light')
       root.classList.remove('dark')
     }
-    localStorage.setItem('9drive:theme', theme)
+    localStorage.setItem('pandrive:theme', theme)
   }, [theme])
 
   function toggleTheme() {
@@ -371,8 +374,8 @@ export function DriveLayout() {
       .catch(() => undefined)
     loadSidebarStats().catch(() => undefined)
     loadConnectedAccounts().catch(() => undefined)
-    window.addEventListener('9drive:storage-changed', loadSidebarStats)
-    return () => window.removeEventListener('9drive:storage-changed', loadSidebarStats)
+    window.addEventListener('pandrive:storage-changed', loadSidebarStats)
+    return () => window.removeEventListener('pandrive:storage-changed', loadSidebarStats)
   }, [])
 
   useEffect(() => {
@@ -433,7 +436,7 @@ export function DriveLayout() {
                 </Button>
                 <div className="flex min-w-0 items-center gap-2">
                   <BrandLogo className="h-9 w-9 shrink-0" />
-                  <span className="truncate text-xl font-extrabold tracking-tight">9Drive</span>
+                  <span className="truncate text-xl font-extrabold tracking-tight">PanDrive</span>
                 </div>
               </div>
               <div className="flex gap-2">

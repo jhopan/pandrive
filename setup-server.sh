@@ -1,13 +1,13 @@
 #!/bin/bash
-# 9Drive production setup helper for Linux servers (Debian/Ubuntu).
+# PanDrive production setup helper for Linux servers (Debian/Ubuntu).
 # Generates: .env template, systemd service, optional cloudflared service.
-# Usage: sudo ./setup-server.sh /opt/9drive
+# Usage: sudo ./setup-server.sh /opt/pandrive
 set -euo pipefail
 
-TARGET_DIR="${1:-/opt/9drive}"
-BIN_NAME="$(ls "$TARGET_DIR"/9drive-linux-* 2>/dev/null | head -1 || true)"
+TARGET_DIR="${1:-/opt/pandrive}"
+BIN_NAME="$(ls "$TARGET_DIR"/pandrive-linux-* 2>/dev/null | head -1 || true)"
 if [ -z "$BIN_NAME" ]; then
-  echo "ERROR: no 9drive-linux-* binary found in $TARGET_DIR"
+  echo "ERROR: no pandrive-linux-* binary found in $TARGET_DIR"
   exit 1
 fi
 echo "Using binary: $BIN_NAME"
@@ -17,7 +17,7 @@ if [ ! -f "$TARGET_DIR/.env" ]; then
   cat > "$TARGET_DIR/.env" <<EOF
 APP_PORT=4000
 FRONTEND_URL=https://your-domain.example
-DATABASE_URL=file:data/9drive.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)
+DATABASE_URL=file:data/pandrive.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)
 JWT_ACCESS_SECRET=$(head -c 32 /dev/urandom | base64 | tr -d '=+/\n' | head -c 48)
 TOKEN_ENCRYPTION_KEY=$(head -c 32 /dev/urandom | base64 | tr -d '=+/' | head -c 32)
 # GOOGLE_CLIENT_ID=xxx.apps.googleusercontent.com
@@ -32,9 +32,9 @@ else
 fi
 
 # ---- systemd ----
-cat > /etc/systemd/system/9drive.service <<EOF
+cat > /etc/systemd/system/pandrive.service <<EOF
 [Unit]
-Description=9Drive gateway
+Description=PanDrive gateway
 After=network-online.target
 Wants=network-online.target
 
@@ -52,11 +52,11 @@ EnvironmentFile=$TARGET_DIR/.env
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable --now 9drive
-echo "service 9drive enabled. Check: systemctl status 9drive"
+systemctl enable --now pandrive
+echo "service pandrive enabled. Check: systemctl status pandrive"
 
 # ---- optional tunnel hint ----
 if grep -q '^TUNNEL_TOKEN=..*' "$TARGET_DIR/.env" 2>/dev/null; then
-  echo "TUNNEL_TOKEN set -> put cloudflared binary next to 9drive binary; it will auto-run."
+  echo "TUNNEL_TOKEN set -> put cloudflared binary next to pandrive binary; it will auto-run."
 fi
 echo "Done."

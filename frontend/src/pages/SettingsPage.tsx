@@ -76,7 +76,7 @@ export function SettingsPage() {
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = '9drive-backup.db'
+      a.download = 'pandrive-backup.db'
       document.body.appendChild(a)
       a.click()
       a.remove()
@@ -235,7 +235,7 @@ export function SettingsPage() {
       if (event.origin !== window.location.origin || event.data?.type !== 'GOOGLE_CONNECTED') return
       setMessage(event.data.status === 'success' ? 'Google Drive connected.' : 'Google Drive connection failed.')
       load().then(() => {
-        window.dispatchEvent(new Event('9drive:storage-changed'))
+        window.dispatchEvent(new Event('pandrive:storage-changed'))
       }).catch(() => undefined)
     }
     window.addEventListener('message', onMessage)
@@ -283,7 +283,7 @@ export function SettingsPage() {
       setMessage('Google Drive connected successfully!')
       setShowGoogleConnectModal(false)
       load()
-      window.dispatchEvent(new Event('9drive:storage-changed'))
+      window.dispatchEvent(new Event('pandrive:storage-changed'))
     } catch (error) {
       alert(error instanceof Error ? error.message : 'Failed to connect account')
     } finally {
@@ -296,7 +296,7 @@ export function SettingsPage() {
     try {
       await apiFetch(`/connected-accounts/${accountId}/sync-quota`, { method: 'POST' })
       await load()
-      window.dispatchEvent(new Event('9drive:storage-changed'))
+      window.dispatchEvent(new Event('pandrive:storage-changed'))
     } finally {
       setSyncingAccountId(null)
     }
@@ -311,7 +311,7 @@ export function SettingsPage() {
       setAccountToDisconnect(null)
       setMessage('Storage account disconnected.')
       await load()
-      window.dispatchEvent(new Event('9drive:storage-changed'))
+      window.dispatchEvent(new Event('pandrive:storage-changed'))
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Failed to disconnect Google Drive account')
     } finally {
@@ -445,7 +445,7 @@ export function SettingsPage() {
             <div className="flex flex-col gap-3.5 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <div className="flex items-center gap-2.5"><Cloud className="h-5 w-5 text-blue-600" /><h2 className="text-[16px] font-bold">Google Drive</h2></div>
-                <p className="mt-1 text-[13px] text-slate-500">Connect one or more Google Drive accounts. 9Drive will route uploads to account with enough space.</p>
+                <p className="mt-1 text-[13px] text-slate-500">Connect one or more Google Drive accounts. PanDrive will route uploads to account with enough space.</p>
               </div>
               <Button className="w-full sm:w-32" size="sm" onClick={connectDrive} disabled={connecting}><Link2 className="h-4 w-4" />{connecting ? 'Opening...' : 'Connect Drive'}</Button>
             </div>
@@ -521,7 +521,7 @@ export function SettingsPage() {
                     <div>
                       <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">Restore Database Backup</h3>
                       <p className="mt-1 text-[12px] text-slate-500 dark:text-slate-400 leading-normal">
-                        Upload a previously downloaded 9Drive backup file to replace the active database.
+                        Upload a previously downloaded PanDrive backup file to replace the active database.
                       </p>
                     </div>
                   </div>
@@ -570,7 +570,7 @@ export function SettingsPage() {
           <Card className="p-4"><Globe className="h-5 w-5 text-blue-600" /><h2 className="mt-2 text-[14px] font-bold">Region</h2><p className="mt-1 text-[12px] text-slate-500">Workspace region: local gateway.</p></Card>
         </div>
       </div>
-      <DummyModal open={Boolean(accountToDisconnect)} title="Disconnect storage?" description="This will remove this storage account from 9Drive. Existing file records for this account may no longer be usable." onClose={() => setAccountToDisconnect(null)}>
+      <DummyModal open={Boolean(accountToDisconnect)} title="Disconnect storage?" description="This will remove this storage account from PanDrive. Existing file records for this account may no longer be usable." onClose={() => setAccountToDisconnect(null)}>
         <div className="grid gap-4">
           <div className="rounded-xl bg-slate-50 p-4 text-sm text-slate-600">
             <p className="font-semibold text-slate-950">{accountToDisconnect?.email}</p>

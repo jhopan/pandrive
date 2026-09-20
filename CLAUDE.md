@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-9Drive Lite — Google Drive multi-account gateway. Go backend + SQLite, React (Preact-compat) frontend. Runtime target: 1 vCPU / 1 GB RAM VPS, one Go binary, SQLite WAL, no Docker/MySQL/S3.
+PanDrive Lite — Google Drive multi-account gateway. Go backend + SQLite, React (Preact-compat) frontend. Runtime target: 1 vCPU / 1 GB RAM VPS, one Go binary, SQLite WAL, no Docker/MySQL/S3.
 
 ## Commands
 
@@ -13,11 +13,11 @@ Backend (all inside `backend-go/`):
 ```bash
 go test ./...                  # all tests
 go test -run TestName .        # single test
-go build -o ../bin/9drive .    # build
+go build -o ../bin/pandrive .    # build
 go run .                       # run (needs env vars below)
 ```
 
-Required env vars: `APP_PORT`, `FRONTEND_URL`, `JWT_ACCESS_SECRET`, `TOKEN_ENCRYPTION_KEY`, `DATABASE_URL` (e.g. `file:data/9drive.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)`).
+Required env vars: `APP_PORT`, `FRONTEND_URL`, `JWT_ACCESS_SECRET`, `TOKEN_ENCRYPTION_KEY`, `DATABASE_URL` (e.g. `file:data/pandrive.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)`).
 
 Frontend (inside `frontend/`): `npm run dev` (Vite, port 5173), `npm run build` (`tsc && vite build`).
 

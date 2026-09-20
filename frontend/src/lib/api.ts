@@ -5,7 +5,7 @@ export const API_URL = (rawApiUrl && rawApiUrl !== 'http://localhost:4000')
   : (isProd ? '/api' : 'http://127.0.0.1:4000')
 
 export async function apiFetch<T = any>(endpoint: string, options: RequestInit & { skipAuth?: boolean } = {}): Promise<T> {
-  const token = localStorage.getItem('9drive.accessToken')
+  const token = localStorage.getItem('pandrive.accessToken')
   const headers = new Headers(options.headers || {})
   
   if (token && !options.skipAuth) {
@@ -26,9 +26,9 @@ export async function apiFetch<T = any>(endpoint: string, options: RequestInit &
 
   if (!response.ok) {
     if (response.status === 401) {
-      localStorage.removeItem('9drive.accessToken')
-      localStorage.removeItem('9drive.refreshToken')
-      localStorage.removeItem('9drive.user')
+      localStorage.removeItem('pandrive.accessToken')
+      localStorage.removeItem('pandrive.refreshToken')
+      localStorage.removeItem('pandrive.user')
       window.location.href = '/login'
     }
     const errorData = await response.json().catch(() => ({}))

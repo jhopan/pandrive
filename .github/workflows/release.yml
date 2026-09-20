@@ -43,12 +43,12 @@ jobs:
             GOOS="${t%/*}"; GOARCH="${t#*/}"
             SUFFIX=""
             [ "$GOOS" = "windows" ] && SUFFIX=".exe"
-            echo "Building 9drive-${GOOS}-${GOARCH}${SUFFIX}"
-            GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "release/9drive-${GOOS}-${GOARCH}${SUFFIX}" .
+            echo "Building pandrive-${GOOS}-${GOARCH}${SUFFIX}"
+            GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "release/pandrive-${GOOS}-${GOARCH}${SUFFIX}" .
           done
 
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          files: backend-go/release/9drive-*
+          files: backend-go/release/pandrive-*
           generate_release_notes: true

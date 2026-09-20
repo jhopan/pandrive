@@ -1,16 +1,16 @@
-# 9Drive Cloudflare Tunnel config (locally-managed mode)
-# Copy next to the 9drive binary as tunnel.yml, then set in .env:
+# PanDrive Cloudflare Tunnel config (locally-managed mode)
+# Copy next to the pandrive binary as tunnel.yml, then set in .env:
 #   TUNNEL_ID=your-tunnel-uuid
 # One-time setup:
 #   cloudflared tunnel login
-#   cloudflared tunnel create 9drive      (writes <uuid>.json next to tunnel.yml)
-#   cloudflared tunnel route dns 9drive drive.jhopan.my.id
+#   cloudflared tunnel create pandrive      (writes <uuid>.json next to tunnel.yml)
+#   cloudflared tunnel route dns pandrive drive.jhopan.my.id
 
 tunnel: YOUR-TUNNEL-UUID
 credentials-file: ./YOUR-TUNNEL-UUID.json
 
 ingress:
-  # Public domain -> local 9drive port
+  # Public domain -> local pandrive port
   - hostname: drive.jhopan.my.id
     service: http://localhost:4000
   # Add more domains/ports as needed:

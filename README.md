@@ -1,4 +1,4 @@
-# 9Drive Lite
+# PanDrive Lite
 
 Google Drive multi-account gateway. Native Go backend, SQLite database, React frontend.
 
@@ -54,7 +54,7 @@ Build:
 ```bash
 cd backend-go
 go test ./...
-go build -o ../bin/9drive .
+go build -o ../bin/pandrive .
 ```
 
 ## Run local Go backend
@@ -65,7 +65,7 @@ $env:APP_PORT="4000"
 $env:FRONTEND_URL="http://localhost:5173"
 $env:JWT_ACCESS_SECRET="replace-with-strong-random-secret"
 $env:TOKEN_ENCRYPTION_KEY="replace-with-another-strong-random-secret"
-$env:DATABASE_URL="file:data/9drive.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+$env:DATABASE_URL="file:data/pandrive.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
 go run .
 ```
 
@@ -79,7 +79,7 @@ go run .
 http://localhost:4000/connected-accounts/google/callback
 ```
 
-4. Register/login to 9Drive.
+4. Register/login to PanDrive.
 5. Save Client ID and Client Secret through Settings UI.
 
 ## Security
@@ -110,54 +110,54 @@ Targets: windows/amd64, windows/arm64, linux/amd64, linux/arm64, darwin/amd64, d
 ### Run
 
 ```bash
-./9drive-linux-amd64             # serves API + UI on :4000 (or APP_PORT from .env)
+./pandrive-linux-amd64             # serves API + UI on :4000 (or APP_PORT from .env)
 ```
 
 ### Auto-start service
 
-**Linux (systemd)** — `/etc/systemd/system/9drive.service`:
+**Linux (systemd)** — `/etc/systemd/system/pandrive.service`:
 ```ini
 [Unit]
-Description=9Drive
+Description=PanDrive
 After=network-online.target
 
 [Service]
-ExecStart=/opt/9drive/9drive-linux-amd64
-WorkingDirectory=/opt/9drive
+ExecStart=/opt/pandrive/pandrive-linux-amd64
+WorkingDirectory=/opt/pandrive
 Restart=always
 User=www-data
 
 [Install]
 WantedBy=multi-user.target
 ```
-`sudo systemctl enable --now 9drive`
+`sudo systemctl enable --now pandrive`
 
 **Windows (NSSM)**:
 ```
-nssm install 9drive C:\path\to\9drive-windows-amd64.exe
-nssm set 9drive AppDirectory C:\path\to
-nssm start 9drive
+nssm install pandrive C:\path\to\pandrive-windows-amd64.exe
+nssm set pandrive AppDirectory C:\path\to
+nssm start pandrive
 ```
 
-**macOS (launchd)** — `~/Library/Launchers/com.jhopan.9drive.plist`:
+**macOS (launchd)** — `~/Library/Launchers/com.jhopan.pandrive.plist`:
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>com.jhopan.9drive</string>
-  <key>ProgramArguments</key><array><string>/opt/9drive/9drive-darwin-arm64</string></array>
-  <key>WorkingDirectory</key><string>/opt/9drive</string>
+  <key>Label</key><string>com.jhopan.pandrive</string>
+  <key>ProgramArguments</key><array><string>/opt/pandrive/pandrive-darwin-arm64</string></array>
+  <key>WorkingDirectory</key><string>/opt/pandrive</string>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
 </dict></plist>
 ```
-`launchctl load ~/Library/Launchers/com.jhopan.9drive.plist`
+`launchctl load ~/Library/Launchers/com.jhopan.pandrive.plist`
 
-**Database:** `data/9drive.db` next to the binary (WorkingDirectory). Back up this file; use Settings > Backup for download.
+**Database:** `data/pandrive.db` next to the binary (WorkingDirectory). Back up this file; use Settings > Backup for download.
 
 
 ### Cloudflare Tunnel (optional, HTTPS tanpa reverse proxy)
 
-Set `TUNNEL_TOKEN` di .env (Cloudflare Zero Trust > Networks > Tunnels > Create > copy token). Letakkan binary `cloudflared` di samping binary 9drive — backend otomatis menjalankannya saat startup. Aplikasi langsung reachable via HTTPS domain tunnel, tanpa nginx/Caddy.
+Set `TUNNEL_TOKEN` di .env (Cloudflare Zero Trust > Networks > Tunnels > Create > copy token). Letakkan binary `cloudflared` di samping binary pandrive — backend otomatis menjalankannya saat startup. Aplikasi langsung reachable via HTTPS domain tunnel, tanpa nginx/Caddy.
 
 
 ### Tunnel dua mode
@@ -182,7 +182,21 @@ docker compose --profile tunnel up -d
 # From GHCR (built by CI on tag):
 docker run -d -p 4000:4000 -v ./data:/data \
   -e JWT_ACCESS_SECRET=... -e TOKEN_ENCRYPTION_KEY=<32-char> \
-  ghcr.io/jhopan/9drive:latest
+  ghcr.io/jhopan/pandrive:latest
 ```
 
-Data lives in `./data/9drive.db` (bind mount). Backup = copy file.
+Data lives in `./data/pandrive.db` (bind mount). Backup = copy file.
+
+
+## Credits
+
+**PanDrive** — built and maintained by **[JhopanStore](https://github.com/jhopan)**.
+
+## References & Acknowledgments
+
+- [OmniCloud](https://github.com/dimartarmizi/OmniCloud) — original reference project that inspired the frontend architecture and Google Drive integration patterns
+- [Google Drive API v3](https://developers.google.com/drive) — storage backend
+- [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) — pure-Go SQLite driver (no CGO)
+- [cloudflared](https://github.com/cloudflare/cloudflared) — Cloudflare Tunnel support
+- [golang-jwt](https://github.com/golang-jwt/jwt) — JWT sessions
+- [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) — bcrypt password hashing

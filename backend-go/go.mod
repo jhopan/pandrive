@@ -1,4 +1,4 @@
-module github.com/jhopan/9drive/backend-go
+module github.com/jhopan/pandrive/backend-go
 
 go 1.26
 

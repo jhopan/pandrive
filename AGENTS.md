@@ -1,4 +1,4 @@
-# Agent Instructions for 9Drive Development
+# Agent Instructions for PanDrive Development
 
 ## Critical Rules
 
@@ -8,7 +8,7 @@
 
 ```bash
 # ❌ ABSOLUTELY FORBIDDEN - destroys all user data
-rm -f data/9drive.db*
+rm -f data/pandrive.db*
 rm -rf backend-go/data/
 
 # ✅ CORRECT - run unit tests (use :memory: DB)
@@ -19,7 +19,7 @@ cd backend-go && ./backup.sh
 ```
 
 **Why this matters:**
-- `data/9drive.db` contains ALL user data
+- `data/pandrive.db` contains ALL user data
 - User login credentials (bcrypt hashed)
 - Connected Google Drive accounts
 - OAuth tokens (AES-GCM encrypted)
@@ -66,7 +66,7 @@ git commit -m "fix: bug Y"
 
 ## Project Overview
 
-**9Drive** — Multi-account cloud drive gateway with Google Drive integration.
+**PanDrive** — Multi-account cloud drive gateway with Google Drive integration.
 
 **Tech stack:**
 - Backend: Go 1.23+ (stdlib + modernc.org/sqlite)
@@ -86,12 +86,12 @@ git commit -m "fix: bug Y"
 ## Project Structure
 
 ```
-9drive/
+pandrive/
 ├── backend-go/              # Go backend (port 4000)
 │   ├── main.go             # Core server + all routes + handlers
 │   ├── *_test.go           # Unit tests (use :memory: DB)
 │   ├── data/               # SQLite database directory
-│   │   └── 9drive.db       # 🔴 PRODUCTION DATABASE - NEVER DELETE
+│   │   └── pandrive.db       # 🔴 PRODUCTION DATABASE - NEVER DELETE
 │   ├── backups/            # Auto backups (gitignored)
 │   ├── backup.sh           # Backup script (keeps last 7)
 │   ├── DEVELOPMENT.md      # Backend dev guidelines
@@ -261,7 +261,7 @@ GOOGLE_REDIRECT_URI_2=http://localhost:4000/connected-accounts/google/callback
 
 ## Current User Setup
 
-**Database:** `C:\Users\ACER\Documents\project\9drive\backend-go\data\9drive.db`
+**Database:** `C:\Users\ACER\Documents\project\pandrive\backend-go\data\pandrive.db`
 
 **Login credentials:**
 - Email: `jhopanstore@gmail.com`
@@ -281,16 +281,16 @@ GOOGLE_REDIRECT_URI_2=http://localhost:4000/connected-accounts/google/callback
 cd backend-go
 
 # List all users
-sqlite3 data/9drive.db "SELECT id, name, email FROM users"
+sqlite3 data/pandrive.db "SELECT id, name, email FROM users"
 
 # List connected accounts
-sqlite3 data/9drive.db "SELECT id, provider, email FROM connected_accounts"
+sqlite3 data/pandrive.db "SELECT id, provider, email FROM connected_accounts"
 
 # List OAuth configs
-sqlite3 data/9drive.db "SELECT id, label, status FROM provider_configs"
+sqlite3 data/pandrive.db "SELECT id, label, status FROM provider_configs"
 
 # Count files
-sqlite3 data/9drive.db "SELECT COUNT(*) FROM files"
+sqlite3 data/pandrive.db "SELECT COUNT(*) FROM files"
 ```
 
 ### Create Database Backup
@@ -299,7 +299,7 @@ sqlite3 data/9drive.db "SELECT COUNT(*) FROM files"
 cd backend-go
 ./backup.sh
 
-# Output: backups/9drive_YYYYMMDD_HHMMSS.db
+# Output: backups/pandrive_YYYYMMDD_HHMMSS.db
 # Keeps last 7 backups, auto-deletes older
 ```
 
@@ -312,7 +312,7 @@ cd backend-go
 ls -la backups/
 
 # Restore (example timestamp)
-cp backups/9drive_20260830_123456.db data/9drive.db
+cp backups/pandrive_20260830_123456.db data/pandrive.db
 
 # Restart backend to use restored DB
 ```
@@ -362,7 +362,7 @@ curl -X PUT http://localhost:4000/auth/me \
 
 **Check if user exists:**
 ```bash
-sqlite3 backend-go/data/9drive.db "SELECT * FROM users"
+sqlite3 backend-go/data/pandrive.db "SELECT * FROM users"
 ```
 
 **If empty:** Database was reset. Admin bootstrap creates `admin@gmail.com` / `admin` on first run.
@@ -371,7 +371,7 @@ sqlite3 backend-go/data/9drive.db "SELECT * FROM users"
 
 **Check database file exists:**
 ```bash
-ls -la backend-go/data/9drive.db
+ls -la backend-go/data/pandrive.db
 ```
 
 **If missing:** Database was deleted. Restore from backup or user must reconnect accounts.
@@ -387,7 +387,7 @@ ls -la backend-go/data/9drive.db
 
 **Check provider_config_quota table:**
 ```bash
-sqlite3 backend-go/data/9drive.db \
+sqlite3 backend-go/data/pandrive.db \
   "SELECT * FROM provider_config_quota"
 ```
 
@@ -503,7 +503,7 @@ npm run dev                      # Start dev server (port 5173)
 npm run build                    # Production build
 
 # Database
-sqlite3 data/9drive.db           # Open DB shell
+sqlite3 data/pandrive.db           # Open DB shell
 .tables                          # List tables
 SELECT * FROM users;             # Query users
 .quit                            # Exit
@@ -516,14 +516,14 @@ git push origin main             # Push
 
 ## Remember
 
-🔴 **NEVER delete `data/9drive.db` for testing**
+🔴 **NEVER delete `data/pandrive.db` for testing**
 ✅ **Always backup before risky operations**
 ✅ **Test with `go test ./...` (uses :memory: DB)**
 ✅ **User data is sacred — losing DB = losing everything**
 
 ---
 
-**Repository:** https://github.com/jhopan/9drive
+**Repository:** https://github.com/jhopan/pandrive
 **Owner:** Jhopan (jhopanstore@gmail.com)
 **Current date:** 2026-08-30
 

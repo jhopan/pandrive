@@ -13,7 +13,7 @@ const QuotaTrackerPage = lazy(() => import('@/pages/QuotaTrackerPage').then(({ Q
 const SettingsPage = lazy(() => import('@/pages/SettingsPage').then(({ SettingsPage }) => ({ default: SettingsPage })))
 
 function PageLoader() {
-  return <main className="grid min-h-screen place-items-center text-sm font-semibold text-slate-500">Loading 9Drive…</main>
+  return <main className="grid min-h-screen place-items-center text-sm font-semibold text-slate-500">Loading PanDrive…</main>
 }
 
 function App() {

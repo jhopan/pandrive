@@ -1,5 +1,5 @@
 #!/bin/bash
-# 9Drive universal build script
+# PanDrive universal build script
 # Builds frontend once, embeds it, cross-compiles backend for all targets.
 # Usage: ./build-release.sh [version]
 set -euo pipefail
@@ -24,8 +24,8 @@ LDFLAGS="-s -w -X main.buildVersion=$VERSION"
 
 build() {
   local GOOS="$1" GOARCH="$2" SUFFIX="$3"
-  echo "    -> 9drive-${GOOS}-${GOARCH}${SUFFIX}"
-  GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "$OUT/9drive-${GOOS}-${GOARCH}${SUFFIX}" .
+  echo "    -> pandrive-${GOOS}-${GOARCH}${SUFFIX}"
+  GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "$OUT/pandrive-${GOOS}-${GOARCH}${SUFFIX}" .
 }
 
 build windows amd64 .exe

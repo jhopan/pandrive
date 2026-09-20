@@ -10,7 +10,7 @@ type ResumableSession = { sessionId: string; file: File; folderId?: string | nul
 
 type StoredSession = { sessionId: string; fileName: string; fileSize: number; folderId?: string | null; targetAccountId?: string | null }
 
-const STORAGE_KEY = '9drive:upload-sessions'
+const STORAGE_KEY = 'pandrive:upload-sessions'
 
 type UploadContextType = {
   uploadProgress: UploadProgressState
@@ -208,8 +208,8 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    window.dispatchEvent(new Event('9drive:storage-changed'))
-    window.dispatchEvent(new Event('9drive:upload-completed'))
+    window.dispatchEvent(new Event('pandrive:storage-changed'))
+    window.dispatchEvent(new Event('pandrive:upload-completed'))
   }
 
   function pauseFile(fileName: string) {
@@ -243,8 +243,8 @@ export function UploadProvider({ children }: { children: ReactNode }) {
           return { ...current, percent: overallPercent, status: allDone ? 'done' : 'uploading', files: nextFiles }
         })
       }, session.sessionId || undefined, session.targetAccountId)
-      window.dispatchEvent(new Event('9drive:storage-changed'))
-      window.dispatchEvent(new Event('9drive:upload-completed'))
+      window.dispatchEvent(new Event('pandrive:storage-changed'))
+      window.dispatchEvent(new Event('pandrive:upload-completed'))
     } catch (err) {
       const isPause = (err as Error)?.name === 'PauseError'
       setUploadProgress((current) => ({
@@ -304,8 +304,8 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         })
       }, session.sessionId, session.targetAccountId)
 
-      window.dispatchEvent(new Event('9drive:storage-changed'))
-      window.dispatchEvent(new Event('9drive:upload-completed'))
+      window.dispatchEvent(new Event('pandrive:storage-changed'))
+      window.dispatchEvent(new Event('pandrive:upload-completed'))
     } catch (err) {
       const isPause = (err as Error)?.name === 'PauseError'
       setUploadProgress((current) => {

@@ -5,9 +5,9 @@ export type AuthUser = {
   status?: string
 }
 
-const ACCESS_TOKEN_KEY = '9drive.accessToken'
-const REFRESH_TOKEN_KEY = '9drive.refreshToken'
-const USER_KEY = '9drive.user'
+const ACCESS_TOKEN_KEY = 'pandrive.accessToken'
+const REFRESH_TOKEN_KEY = 'pandrive.refreshToken'
+const USER_KEY = 'pandrive.user'
 
 export function getAccessToken() {
   return localStorage.getItem(ACCESS_TOKEN_KEY)
