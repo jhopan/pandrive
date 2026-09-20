@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { Bell, Cloud, Database, Globe, HardDrive, Link2, RefreshCw, Trash2, Copy } from 'lucide-react'
+import { Bell, Cloud, CloudDownload, Database, Globe, HardDrive, Link2, RefreshCw, Trash2, Copy } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { DummyModal } from '@/components/drive/DummyModal'
@@ -38,6 +38,8 @@ export function SettingsPage() {
   const [avatarError, setAvatarError] = useState(false)
   const [selectedAccountId, setSelectedAccountId] = useState('')
   const [updatingSystem, setUpdatingSystem] = useState(false)
+  const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string; updateAvailable: boolean; releaseUrl: string; assetUrl: string; assetName: string; checkedAt: string; error?: string } | null>(null)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [updateModalOpen, setUpdateModalOpen] = useState(false)
   const [updateModalTitle, setUpdateModalTitle] = useState('')
 
@@ -180,6 +182,23 @@ export function SettingsPage() {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight
     }
   }, [updateLog])
+
+  async function checkForUpdates(force = false) {
+    setCheckingUpdate(true)
+    try {
+      const data = await apiFetch<{ current: string; latest: string; updateAvailable: boolean; releaseUrl: string; assetUrl: string; assetName: string; checkedAt: string; error?: string }>(`/system/version${force ? '?refresh=1' : ''}`)
+      setUpdateInfo(data)
+    } catch (error) {
+      setUpdateInfo({ current: '?', latest: '', updateAvailable: false, releaseUrl: '', assetUrl: '', assetName: '', checkedAt: '', error: error instanceof Error ? error.message : 'Update check failed' })
+    } finally {
+      setCheckingUpdate(false)
+    }
+  }
+
+  // Auto-check for updates when Settings opens.
+  useEffect(() => {
+    checkForUpdates().catch(() => undefined)
+  }, [])
 
   async function runSystemUpdate() {
     setUpdatingSystem(true)
@@ -455,13 +474,54 @@ export function SettingsPage() {
 
           <Card className="overflow-hidden p-3.5">
             <div className="flex flex-col gap-3.5 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <CloudDownload className="h-5 w-5 text-blue-600" />
+                  <h2 className="text-[16px] font-bold">Updates</h2>
+                  {updateInfo?.updateAvailable ? (
+                    <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-700">Update available</span>
+                  ) : updateInfo && !updateInfo.error ? (
+                    <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-emerald-700">Up to date</span>
+                  ) : null}
+                </div>
+                <p className="mt-1 text-[13px] text-slate-500">
+                  {updateInfo ? (
+                    <>
+                      Installed: <span className="font-semibold">{updateInfo.current || 'unknown'}</span>
+                      {updateInfo.latest ? <> · Latest: <span className="font-semibold">{updateInfo.latest}</span></> : null}
+                      {updateInfo.error ? <span className="ml-1 text-red-600">({updateInfo.error})</span> : null}
+                    </>
+                  ) : (
+                    checkingUpdate ? 'Checking for updates...' : 'Version information unavailable.'
+                  )}
+                </p>
+              </div>
+              <div className="flex w-full gap-2 sm:w-auto">
+                <Button variant="outline" size="sm" className="flex-1 sm:flex-none" onClick={() => checkForUpdates(true)} disabled={checkingUpdate}>
+                  <RefreshCw className={checkingUpdate ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />{checkingUpdate ? 'Checking...' : 'Check'}
+                </Button>
+                {updateInfo?.updateAvailable && updateInfo.assetUrl ? (
+                  <Button size="sm" className="flex-1 sm:flex-none" onClick={() => window.open(updateInfo.assetUrl, '_blank')}>
+                    <CloudDownload className="h-4 w-4" />Download {updateInfo.assetName || ''}
+                  </Button>
+                ) : updateInfo?.releaseUrl ? (
+                  <Button size="sm" variant="outline" className="flex-1 sm:flex-none" onClick={() => window.open(updateInfo.releaseUrl, '_blank')}>
+                    Release notes
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          </Card>
+
+          <Card className="overflow-hidden p-3.5">
+            <div className="flex flex-col gap-3.5 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <div className="flex items-center gap-2.5">
                   <RefreshCw className="h-5 w-5 text-blue-600" />
                   <h2 className="text-[16px] font-bold">System Update</h2>
                 </div>
                 <p className="mt-1 text-[13px] text-slate-500">
-                  Pull the latest code from GitHub. Dev servers will automatically restart.
+                  Only for git checkouts: pulls the latest code from GitHub. Release binaries update via the Updates card above.
                 </p>
               </div>
               <Button

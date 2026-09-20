@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 "path/filepath"
 	"os/exec"
 	"strings"
@@ -45,6 +46,7 @@ type Config struct {
 	GoogleClientID     string
 	GoogleClientSecret string
 	GoogleRedirectURI  string
+	UpdateRepo         string
 }
 
 // buildVersion is injected at link time via -ldflags "-X main.buildVersion=...".
@@ -173,6 +175,7 @@ func loadConfig() Config {
 		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 		GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 		GoogleRedirectURI:  os.Getenv("GOOGLE_REDIRECT_URI"),
+		UpdateRepo:         getenv("UPDATE_REPO", "jhopan/pandrive"),
 	}
 }
 
@@ -378,6 +381,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("DELETE /system/google-config/{id}", a.requireAuth(a.deleteGoogleConfig))
 	mux.HandleFunc("PATCH /system/google-config/{id}", a.requireAuth(a.updateGoogleConfig))
 	mux.HandleFunc("POST /system/update", a.requireAuth(a.systemUpdate))
+	mux.HandleFunc("GET /system/version", a.requireAuth(a.updateInfoHandler))
 	mux.HandleFunc("GET /connected-accounts", a.requireAuth(a.listAccounts))
 	mux.HandleFunc("GET /connected-accounts/google/connect-url", a.requireAuth(a.googleConnectURL))
 	mux.HandleFunc("GET /connected-accounts/google/callback", a.googleCallback)
@@ -635,6 +639,155 @@ func (a *App) updateGoogleConfig(w http.ResponseWriter, r *http.Request) {
 		_, _ = a.DB.Exec(`UPDATE provider_configs SET status=? WHERE id=?`, body.Status, configID)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Config updated."})
+}
+
+// ---- update checking -------------------------------------------------------
+
+type updateInfo struct {
+	Current   string `json:"current"`
+	Latest    string `json:"latest"`
+	Available bool   `json:"updateAvailable"`
+	ReleaseURL string `json:"releaseUrl"`
+	AssetURL  string `json:"assetUrl"`
+	AssetName string `json:"assetName"`
+	CheckedAt string `json:"checkedAt"`
+	Error     string `json:"error,omitempty"`
+}
+
+var (
+	updateMu      sync.Mutex
+	updateCached  *updateInfo
+	updateFetched time.Time
+)
+
+// normalizeVersion strips a leading v and any -suffix so semver compare works ("v0.4.0-deploy" -> "0.4.0").
+func normalizeVersion(v string) string {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	return v
+}
+
+// versionNewer reports whether latest is a strictly newer semver-ish value than current.
+func versionNewer(current, latest string) bool {
+	c, l := normalizeVersion(current), normalizeVersion(latest)
+	if c == "" || l == "" {
+		return false
+	}
+	cp, lp := strings.Split(c, "."), strings.Split(l, ".")
+	for i := 0; i < len(lp) || i < len(cp); i++ {
+		var cv, lv int
+		if i < len(cp) {
+			_, _ = fmt.Sscan(strings.TrimFunc(cp[i], func(r rune) bool { return r < '0' || r > '9' }), &cv)
+		}
+		if i < len(lp) {
+			_, _ = fmt.Sscan(strings.TrimFunc(lp[i], func(r rune) bool { return r < '0' || r > '9' }), &lv)
+		}
+		if lv != cv {
+			return lv > cv
+		}
+	}
+	return false
+}
+
+// fetchLatestRelease queries the GitHub releases API for this repository.
+func (a *App) fetchLatestRelease(ctx context.Context) updateInfo {
+	info := updateInfo{Current: buildVersion, CheckedAt: time.Now().UTC().Format(time.RFC3339)}
+	repo := a.Config.UpdateRepo
+	if repo == "" {
+		info.Error = "update repo not configured"
+		return info
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/"+repo+"/releases/latest", nil)
+	if err != nil {
+		info.Error = err.Error()
+		return info
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "pandrive/"+buildVersion)
+	resp, err := a.HTTPClient.Do(req)
+	if err != nil {
+		info.Error = err.Error()
+		return info
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		info.Error = fmt.Sprintf("github release lookup failed (%d)", resp.StatusCode)
+		return info
+	}
+	var payload struct {
+		TagName string `json:"tag_name"`
+		HTMLURL string `json:"html_url"`
+		Assets  []struct {
+			Name string `json:"name"`
+			URL  string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
+		info.Error = err.Error()
+		return info
+	}
+	info.Latest = payload.TagName
+	info.ReleaseURL = payload.HTMLURL
+	info.Available = versionNewer(buildVersion, payload.TagName)
+	// Match the asset for this OS/arch (release names: pandrive-<os>-<arch>[.exe]).
+	want := "pandrive-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		want += ".exe"
+	}
+	info.AssetName = want
+	for _, asset := range payload.Assets {
+		if asset.Name == want {
+			info.AssetURL = asset.URL
+			break
+		}
+	}
+	return info
+}
+
+// updateInfoHandler returns cached release info (refresh=1 forces a re-check).
+func (a *App) updateInfoHandler(w http.ResponseWriter, r *http.Request) {
+	updateMu.Lock()
+	fresh := updateCached != nil && time.Since(updateFetched) < 6*time.Hour
+	cached := updateCached
+	updateMu.Unlock()
+	if r.URL.Query().Get("refresh") != "" || !fresh {
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		info := a.fetchLatestRelease(ctx)
+		cancel()
+		updateMu.Lock()
+		updateCached = &info
+		updateFetched = time.Now()
+		updateMu.Unlock()
+		writeJSON(w, http.StatusOK, info)
+		return
+	}
+	writeJSON(w, http.StatusOK, cached)
+}
+
+// startUpdateChecker logs available updates at startup and re-checks every 12h.
+func (a *App) startUpdateChecker() {
+	go func() {
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			info := a.fetchLatestRelease(ctx)
+			cancel()
+			updateMu.Lock()
+			updateCached = &info
+			updateFetched = time.Now()
+			updateMu.Unlock()
+			switch {
+			case info.Error != "":
+				log.Printf("update check failed: %s", info.Error)
+			case info.Available:
+				log.Printf("UPDATE AVAILABLE: %s -> %s (%s)", info.Current, info.Latest, info.ReleaseURL)
+			default:
+				log.Printf("up to date (%s)", info.Current)
+			}
+			time.Sleep(12 * time.Hour)
+		}
+	}()
 }
 
 func (a *App) systemUpdate(w http.ResponseWriter, r *http.Request) {
@@ -2032,6 +2185,8 @@ func main() {
 			time.Sleep(5 * time.Minute)
 		}
 	}()
+
+	app.startUpdateChecker()
 
 	bind := os.Getenv("APP_BIND")
 	if bind == "" {

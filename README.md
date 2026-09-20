@@ -200,3 +200,8 @@ Data lives in `./data/pandrive.db` (bind mount). Backup = copy file.
 - [cloudflared](https://github.com/cloudflare/cloudflared) — Cloudflare Tunnel support
 - [golang-jwt](https://github.com/golang-jwt/jwt) — JWT sessions
 - [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) — bcrypt password hashing
+
+
+### Updates
+
+PanDrive checks GitHub releases on startup and every 12h; the result shows in **Settings > Updates** (current vs latest, download button matching your OS/arch). Release binaries are updated by replacing the binary and restarting; git checkouts can use Settings > System Update.
