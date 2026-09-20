@@ -16,15 +16,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
-	"runtime"
-"path/filepath"
 	"os/exec"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -277,15 +279,25 @@ func (a *App) ensureInitialAdmin() error {
 // ensureInitialAdminPassword creates the bootstrap admin and returns the generated password (empty if admin already exists).
 func (a *App) ensureInitialAdminPassword() (string, error) {
 	var count int
-	if err := a.DB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil { return "", err }
-	if count != 0 { return "", nil }
+	if err := a.DB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+		return "", err
+	}
+	if count != 0 {
+		return "", nil
+	}
 	// Random one-time password, shown once in the log on first run.
 	buf := make([]byte, 12)
-	if _, err := rand.Read(buf); err != nil { return "", err }
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
 	password := hex.EncodeToString(buf)
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil { return "", err }
-	if _, err = a.DB.Exec(`INSERT INTO users (id,name,email,password_hash) VALUES (?,?,?,?)`, randomID(), "Administrator", "admin@gmail.com", string(hash)); err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
+	if _, err = a.DB.Exec(`INSERT INTO users (id,name,email,password_hash) VALUES (?,?,?,?)`, randomID(), "Administrator", "admin@gmail.com", string(hash)); err != nil {
+		return "", err
+	}
 	log.Printf("Initial admin account created: admin@gmail.com / %s  (change this password after first login)", password)
 	return password, nil
 }
@@ -298,7 +310,7 @@ func (a *App) bootstrapGoogleConfig() error {
 	if err := a.DB.QueryRow(`SELECT id FROM users WHERE email='admin@gmail.com'`).Scan(&adminID); err != nil {
 		return nil
 	}
-	
+
 	// Bootstrap primary config
 	var exists int
 	_ = a.DB.QueryRow(`SELECT COUNT(*) FROM provider_configs WHERE provider='google_drive' AND user_id=?`, adminID).Scan(&exists)
@@ -311,7 +323,7 @@ func (a *App) bootstrapGoogleConfig() error {
 			randomID(), adminID, "google_drive", a.encrypt(a.Config.GoogleClientID), a.encrypt(a.Config.GoogleClientSecret), redirectURI,
 			`["https://www.googleapis.com/auth/drive","https://www.googleapis.com/auth/userinfo.profile","https://www.googleapis.com/auth/userinfo.email"]`, "Primary")
 	}
-	
+
 	// Bootstrap additional configs from GOOGLE_CLIENT_ID_2, GOOGLE_CLIENT_SECRET_2, etc.
 	for i := 2; i <= 10; i++ {
 		clientID := os.Getenv(fmt.Sprintf("GOOGLE_CLIENT_ID_%d", i))
@@ -400,6 +412,8 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /files/{id}/share", a.requireAuth(a.shareFileUrl))
 	mux.HandleFunc("POST /files/{id}/public-permission", a.requireAuth(a.publicPermission))
 	mux.HandleFunc("POST /files/batch-download", a.requireAuth(a.batchDownloadZip))
+	mux.HandleFunc("GET /files/duplicates", a.requireAuth(a.findDuplicates))
+	mux.HandleFunc("GET /storage/analyzer", a.requireAuth(a.storageAnalyzer))
 	mux.HandleFunc("POST /files/{id}/transfer", a.requireAuth(a.transferFile))
 	mux.HandleFunc("POST /files/{id}/restore", a.requireAuth(a.restoreFile))
 	mux.HandleFunc("POST /files/{id}/purge", a.requireAuth(a.purgeFile))
@@ -476,7 +490,6 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	a.respondSession(w, http.StatusOK, user)
 }
 
-
 func (a *App) respondSession(w http.ResponseWriter, status int, user authUser) {
 	accessToken, err := a.signAccessToken(user)
 	if err != nil {
@@ -545,8 +558,8 @@ func (a *App) getGoogleConfig(w http.ResponseWriter, r *http.Request) {
 			requestCount = 0
 		}
 		configs = append(configs, map[string]any{
-			"id": id, "label": label, "redirectUri": redirectURI, "status": status, 
-			"lastUsedAt": lastUsed, "createdAt": createdAt, 
+			"id": id, "label": label, "redirectUri": redirectURI, "status": status,
+			"lastUsedAt": lastUsed, "createdAt": createdAt,
 			"quotaUsed": requestCount, "quotaLimit": 8000,
 		})
 	}
@@ -649,14 +662,14 @@ func (a *App) updateGoogleConfig(w http.ResponseWriter, r *http.Request) {
 // ---- update checking -------------------------------------------------------
 
 type updateInfo struct {
-	Current   string `json:"current"`
-	Latest    string `json:"latest"`
-	Available bool   `json:"updateAvailable"`
+	Current    string `json:"current"`
+	Latest     string `json:"latest"`
+	Available  bool   `json:"updateAvailable"`
 	ReleaseURL string `json:"releaseUrl"`
-	AssetURL  string `json:"assetUrl"`
-	AssetName string `json:"assetName"`
-	CheckedAt string `json:"checkedAt"`
-	Error     string `json:"error,omitempty"`
+	AssetURL   string `json:"assetUrl"`
+	AssetName  string `json:"assetName"`
+	CheckedAt  string `json:"checkedAt"`
+	Error      string `json:"error,omitempty"`
 }
 
 var (
@@ -828,7 +841,7 @@ func (a *App) googleConnectURL(w http.ResponseWriter, r *http.Request) {
 		ON CONFLICT(provider_config_id) DO UPDATE SET 
 			request_count = CASE WHEN window_start < ? THEN 1 ELSE request_count + 1 END,
 			window_start = CASE WHEN window_start < ? THEN ? ELSE window_start END,
-			updated_at = CURRENT_TIMESTAMP`, 
+			updated_at = CURRENT_TIMESTAMP`,
 		randomID(), id, now.Format(time.RFC3339Nano), windowStart, windowStart, now.Format(time.RFC3339Nano))
 	clientID, err := a.decrypt(encryptedID)
 	if err != nil {
@@ -993,7 +1006,7 @@ func (a *App) getGoogleToken(ctx context.Context, accountID string, forceRefresh
 	if newToken.RefreshToken != "" && newToken.RefreshToken != refreshToken {
 		newEncryptedRefresh = a.encrypt(newToken.RefreshToken)
 	}
-	
+
 	_, _ = a.DB.Exec(`UPDATE connected_accounts SET access_token_encrypted=?, refresh_token_encrypted=?, token_expires_at=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
 		a.encrypt(newToken.AccessToken), newEncryptedRefresh, newToken.Expiry.UTC().Format(time.RFC3339Nano), accountID)
 
@@ -1487,9 +1500,11 @@ func (a *App) downloadFile(w http.ResponseWriter, r *http.Request) {
 		req.Header.Set("Range", rangeHeader)
 	}
 	response, err := a.HTTPClient.Do(req)
-	
+
 	if err == nil && response.StatusCode == http.StatusUnauthorized {
-		if response != nil { response.Body.Close() }
+		if response != nil {
+			response.Body.Close()
+		}
 		accessToken, err = a.getGoogleToken(r.Context(), accountID, true)
 		if err == nil {
 			req, _ = http.NewRequestWithContext(r.Context(), http.MethodGet, a.GoogleDriveAPIURL+`/files/`+url.PathEscape(providerFileID)+`?alt=media`, nil)
@@ -1748,7 +1763,7 @@ func parseScopes(raw string) []string {
 
 func (a *App) googleCallback(w http.ResponseWriter, r *http.Request) {
 	wantsJSON := r.Header.Get("Accept") == "application/json" || r.Header.Get("Content-Type") == "application/json" || r.Header.Get("Authorization") != ""
-	
+
 	redirectError := func() {
 		if wantsJSON {
 			writeError(w, http.StatusBadRequest, "OAUTH_FAILED", "OAuth connection failed")
@@ -1976,6 +1991,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]string{"code": code, "message": message})
 }
+
 // idCounter guarantees uniqueness even when the system clock has coarse resolution
 // (Windows timer granularity is ~1-15ms, so UnixNano alone collided on rapid inserts).
 var idCounter atomic.Uint64
@@ -2522,6 +2538,233 @@ func (a *App) emptyAccountTrash(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// findDuplicates groups active files by (name, size) across every connected account.
+// Groups with more than one member are potential reclaimable space.
+func (a *App) findDuplicates(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	rows, err := a.DB.Query(`SELECT f.id,f.name,f.size_bytes,f.mime_type,COALESCE(f.created_at,''),COALESCE(f.updated_at,''),c.email,COALESCE(d.name,'')
+		FROM files f
+		JOIN connected_accounts c ON c.id=f.connected_account_id
+		LEFT JOIN folders d ON d.id=f.folder_id
+		WHERE f.user_id=? AND f.status='active' AND f.size_bytes > 0
+		  AND (f.name, f.size_bytes) IN (
+			SELECT name, size_bytes FROM files
+			WHERE user_id=? AND status='active' AND size_bytes > 0
+			GROUP BY name, size_bytes HAVING COUNT(*) > 1
+		  )
+		ORDER BY f.size_bytes DESC, f.name, c.email`, user.ID, user.ID)
+	if err != nil {
+		writeError(w, 500, "DUPLICATES_FAILED", "Unable to scan duplicates: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	type dupFile struct {
+		ID           string `json:"id"`
+		Name         string `json:"name"`
+		SizeBytes    string `json:"sizeBytes"`
+		MimeType     string `json:"mimeType"`
+		CreatedAt    string `json:"createdAt"`
+		UpdatedAt    string `json:"updatedAt"`
+		AccountEmail string `json:"accountEmail"`
+		Folder       string `json:"folder"`
+	}
+	groups := map[string]*struct {
+		Name        string    `json:"name"`
+		SizeBytes   string    `json:"sizeBytes"`
+		Count       int       `json:"count"`
+		WastedBytes string    `json:"wastedBytes"`
+		Files       []dupFile `json:"files"`
+	}{}
+	var order []string
+	var totalWasted int64
+	for rows.Next() {
+		var id, name, mimeType, createdAt, updatedAt, email, folder string
+		var size int64
+		if err := rows.Scan(&id, &name, &size, &mimeType, &createdAt, &updatedAt, &email, &folder); err != nil {
+			writeError(w, 500, "DUPLICATES_FAILED", "Unable to read duplicates.")
+			return
+		}
+		key := name + "\x00" + fmt.Sprint(size)
+		g, ok := groups[key]
+		if !ok {
+			g = &struct {
+				Name        string    `json:"name"`
+				SizeBytes   string    `json:"sizeBytes"`
+				Count       int       `json:"count"`
+				WastedBytes string    `json:"wastedBytes"`
+				Files       []dupFile `json:"files"`
+			}{Name: name, SizeBytes: fmt.Sprint(size)}
+			groups[key] = g
+			order = append(order, key)
+		}
+		g.Files = append(g.Files, dupFile{ID: id, Name: name, SizeBytes: fmt.Sprint(size), MimeType: mimeType, CreatedAt: createdAt, UpdatedAt: updatedAt, AccountEmail: email, Folder: folder})
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, 500, "DUPLICATES_FAILED", "Unable to read duplicates.")
+		return
+	}
+	out := make([]any, 0, len(order))
+	for _, key := range order {
+		g := groups[key]
+		g.Count = len(g.Files)
+		// Copies beyond the first are the reclaimable ones.
+		wasted := int64(g.Count-1) * mustInt64(g.SizeBytes)
+		g.WastedBytes = fmt.Sprint(wasted)
+		totalWasted += wasted
+		out = append(out, g)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"groups": out, "groupCount": len(out), "totalWastedBytes": fmt.Sprint(totalWasted)})
+}
+
+func mustInt64(s string) int64 {
+	n, _ := strconv.ParseInt(s, 10, 64)
+	return n
+}
+
+// storageAnalyzer summarises where space goes: per account, by file type, and the largest files.
+func (a *App) storageAnalyzer(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+
+	type accountRow struct {
+		ID             string `json:"id"`
+		Email          string `json:"email"`
+		FileCount      int    `json:"fileCount"`
+		TotalBytes     string `json:"totalBytes"`
+		UsedBytes      string `json:"usedBytes"`
+		AvailableBytes string `json:"availableBytes"`
+	}
+	accounts := []accountRow{}
+	rows, err := a.DB.Query(`SELECT c.id,c.email,COUNT(f.id),COALESCE(SUM(f.size_bytes),0),COALESCE(s.used_bytes,0),COALESCE(s.available_bytes,0)
+		FROM connected_accounts c
+		LEFT JOIN files f ON f.connected_account_id=c.id AND f.status='active'
+		LEFT JOIN storage_accounts s ON s.connected_account_id=c.id
+		WHERE c.user_id=? GROUP BY c.id ORDER BY SUM(f.size_bytes) DESC`, user.ID)
+	if err != nil {
+		writeError(w, 500, "ANALYZER_FAILED", "Unable to summarise accounts.")
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ac accountRow
+		var count int
+		var total, used, avail int64
+		if err := rows.Scan(&ac.ID, &ac.Email, &count, &total, &used, &avail); err != nil {
+			writeError(w, 500, "ANALYZER_FAILED", "Unable to summarise accounts.")
+			return
+		}
+		ac.FileCount = count
+		ac.TotalBytes = fmt.Sprint(total)
+		ac.UsedBytes = fmt.Sprint(used)
+		ac.AvailableBytes = fmt.Sprint(avail)
+		accounts = append(accounts, ac)
+	}
+
+	// Extension breakdown, computed by streaming name+size (cheap and dialect-safe).
+	type typeRow struct {
+		Label string `json:"label"`
+		Bytes string `json:"bytes"`
+		Count int    `json:"count"`
+	}
+	typeBuckets := map[string]*typeRow{}
+	var typeOrder []string
+	all, err := a.DB.Query(`SELECT name, size_bytes FROM files WHERE user_id=? AND status='active'`, user.ID)
+	if err != nil {
+		writeError(w, 500, "ANALYZER_FAILED", "Unable to summarise file types.")
+		return
+	}
+	defer all.Close()
+	var totalFiles int
+	var totalBytes int64
+	for all.Next() {
+		var name string
+		var size int64
+		if err := all.Scan(&name, &size); err != nil {
+			continue
+		}
+		totalFiles++
+		totalBytes += size
+		label := fileTypeLabel(name)
+		b, ok := typeBuckets[label]
+		if !ok {
+			b = &typeRow{Label: label}
+			typeBuckets[label] = b
+			typeOrder = append(typeOrder, label)
+		}
+		b.Bytes = fmt.Sprint(mustInt64(b.Bytes) + size)
+		b.Count++
+	}
+	sort.SliceStable(typeOrder, func(i, j int) bool {
+		return mustInt64(typeBuckets[typeOrder[i]].Bytes) > mustInt64(typeBuckets[typeOrder[j]].Bytes)
+	})
+	byType := make([]typeRow, 0, len(typeOrder))
+	for _, label := range typeOrder {
+		byType = append(byType, *typeBuckets[label])
+	}
+
+	type largestFile struct {
+		ID           string `json:"id"`
+		Name         string `json:"name"`
+		SizeBytes    string `json:"sizeBytes"`
+		MimeType     string `json:"mimeType"`
+		AccountEmail string `json:"accountEmail"`
+		Folder       string `json:"folder"`
+		CreatedAt    string `json:"createdAt"`
+	}
+	largest := []largestFile{}
+	lrows, err := a.DB.Query(`SELECT f.id,f.name,f.size_bytes,f.mime_type,c.email,COALESCE(d.name,''),COALESCE(f.created_at,'')
+		FROM files f JOIN connected_accounts c ON c.id=f.connected_account_id
+		LEFT JOIN folders d ON d.id=f.folder_id
+		WHERE f.user_id=? AND f.status='active' ORDER BY f.size_bytes DESC LIMIT 25`, user.ID)
+	if err != nil {
+		writeError(w, 500, "ANALYZER_FAILED", "Unable to list largest files.")
+		return
+	}
+	defer lrows.Close()
+	for lrows.Next() {
+		var lf largestFile
+		var size int64
+		if err := lrows.Scan(&lf.ID, &lf.Name, &size, &lf.MimeType, &lf.AccountEmail, &lf.Folder, &lf.CreatedAt); err != nil {
+			continue
+		}
+		lf.SizeBytes = fmt.Sprint(size)
+		largest = append(largest, lf)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accounts": accounts,
+		"byType":   byType,
+		"largest":  largest,
+		"totals":   map[string]string{"files": fmt.Sprint(totalFiles), "bytes": fmt.Sprint(totalBytes)},
+	})
+}
+
+// fileTypeLabel buckets a filename into a coarse type for the storage breakdown.
+func fileTypeLabel(name string) string {
+	dot := strings.LastIndex(name, ".")
+	if dot < 0 || dot == len(name)-1 {
+		return "Other"
+	}
+	ext := strings.ToLower(name[dot+1:])
+	switch ext {
+	case "jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "heic", "avif":
+		return "Images"
+	case "mp4", "mkv", "mov", "avi", "webm", "m4v", "flv":
+		return "Video"
+	case "mp3", "wav", "flac", "m4a", "aac", "ogg", "opus":
+		return "Audio"
+	case "zip", "rar", "7z", "tar", "gz", "bz2", "xz":
+		return "Archives"
+	case "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv", "json", "xml", "odt", "ods":
+		return "Documents"
+	case "apk", "exe", "msi", "deb", "rpm", "dmg", "iso", "appimage":
+		return "Installers"
+	case "js", "ts", "go", "py", "java", "kt", "c", "cpp", "rs", "sh", "html", "css", "sql", "yaml", "yml":
+		return "Code"
+	}
+	return "Other"
+}
+
 func (a *App) deleteFile(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
 	fileID := r.PathValue("id")
@@ -2606,9 +2849,11 @@ func (a *App) deleteFolder(w http.ResponseWriter, r *http.Request) {
 func (a *App) batchDownloadZip(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
 	var fileIDs []string
-	
+
 	if r.Header.Get("Content-Type") == "application/json" {
-		var body struct { FileIDs []string `json:"fileIds"` }
+		var body struct {
+			FileIDs []string `json:"fileIds"`
+		}
 		if err := decodeJSON(r, &body); err == nil {
 			fileIDs = body.FileIDs
 		}
@@ -2625,7 +2870,7 @@ func (a *App) batchDownloadZip(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="pandrive-download.zip"`)
-	
+
 	zw := zip.NewWriter(w)
 	var errorLog strings.Builder
 
@@ -2636,7 +2881,7 @@ func (a *App) batchDownloadZip(w http.ResponseWriter, r *http.Request) {
 			errorLog.WriteString(fmt.Sprintf("File ID %s: Not found in local database\n", fileID))
 			continue
 		}
-		
+
 		if strings.HasPrefix(mimeType, "application/vnd.google-apps.") {
 			errorLog.WriteString(fmt.Sprintf("File %s: Google native document formats (docs, sheets, forms) cannot be downloaded directly via ZIP.\n", fileName))
 			continue
@@ -2653,7 +2898,9 @@ func (a *App) batchDownloadZip(w http.ResponseWriter, r *http.Request) {
 			req.Header.Set("Authorization", "Bearer "+accessToken)
 			resp, err := a.HTTPClient.Do(req)
 			if err == nil && resp.StatusCode == http.StatusUnauthorized {
-				if resp != nil { resp.Body.Close() }
+				if resp != nil {
+					resp.Body.Close()
+				}
 				accessToken, err = a.getGoogleToken(r.Context(), accID, true)
 				if err == nil {
 					req, _ = http.NewRequestWithContext(r.Context(), http.MethodGet, url, nil)
@@ -2671,7 +2918,7 @@ func (a *App) batchDownloadZip(w http.ResponseWriter, r *http.Request) {
 				errorLog.WriteString(fmt.Sprintf("File %s: Google API error %d - %s\n", fileName, resp.StatusCode, string(bodyBytes)))
 				continue
 			}
-			
+
 			f, err := zw.Create(fileName)
 			if err == nil {
 				io.Copy(f, resp.Body)

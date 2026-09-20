@@ -11,6 +11,8 @@ import { UploadProvider } from '@/context/UploadContext'
 const AllFilesPage = lazy(() => import('@/pages/AllFilesPage').then(({ AllFilesPage }) => ({ default: AllFilesPage })))
 const QuotaTrackerPage = lazy(() => import('@/pages/QuotaTrackerPage').then(({ QuotaTrackerPage }) => ({ default: QuotaTrackerPage })))
 const SettingsPage = lazy(() => import('@/pages/SettingsPage').then(({ SettingsPage }) => ({ default: SettingsPage })))
+const DuplicatesPage = lazy(() => import('@/pages/DuplicatesPage').then(({ DuplicatesPage }) => ({ default: DuplicatesPage })))
+const StoragePage = lazy(() => import('@/pages/StoragePage').then(({ StoragePage }) => ({ default: StoragePage })))
 const TrashPage = lazy(() => import('@/pages/TrashPage').then(({ TrashPage }) => ({ default: TrashPage })))
 
 function PageLoader() {
@@ -32,6 +34,8 @@ function App() {
               <Route path="all-files" element={<AllFilesPage />} />
               <Route path="quota" element={<QuotaTrackerPage />} />
               <Route path="trash" element={<TrashPage />} />
+              <Route path="duplicates" element={<DuplicatesPage />} />
+              <Route path="storage" element={<StoragePage />} />
               <Route path="settings" element={<SettingsPage />} />
             </Route>
           </Route>

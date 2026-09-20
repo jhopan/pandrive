@@ -3,11 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"golang.org/x/crypto/bcrypt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"golang.org/x/crypto/bcrypt"
 )
 
 func registerAndLogin(t *testing.T, app *App, email string) (string, authUser) {

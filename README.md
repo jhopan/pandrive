@@ -44,6 +44,8 @@ Implemented and tested:
 - `POST /folders`
 - `POST /connected-accounts/{id}/empty-trash`
 - `GET /files/{id}/download`
+- `GET /files/duplicates` (same name + size across accounts)
+- `GET /storage/analyzer` (per-account, by-type, largest files)
 - `GET /system/version` (update checker)
 - `POST /upload/resumable`
 - `PUT /upload/resumable/{id}`
@@ -94,6 +96,8 @@ http://localhost:4000/connected-accounts/google/callback
 | **All Files** | Every synced file across all connected accounts; upload, rename, move, ZIP batch download, per-account filter |
 | **Account Files** | Same view scoped to one account (click an account in the sidebar) |
 | **Trash** | Locally deleted files (restorable) plus permanent delete and **Empty Drive trash** per account to actually free quota |
+| **Duplicates** | Finds same-name + same-size files across every account, one-click select of the extra copies, reclaimable bytes total |
+| **Storage** | Analyzer: bytes per account, breakdown by file type, and the 25 largest indexed files |
 | **Transfers** | Move or copy files between two connected accounts **server-side** — Google does the copying, so no bytes pass through this server or your bandwidth |
 | **Quota Tracker** | Storage per account, upload routing mode, OAuth config rotation status |
 | **Settings** | Connect Drive, OAuth config manager, Updates (auto update check), backup/restore, security |
