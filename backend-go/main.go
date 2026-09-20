@@ -530,6 +530,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /files/{id}/share", a.requireAuth(a.shareFileUrl))
 	mux.HandleFunc("POST /files/{id}/public-permission", a.requireAuth(a.publicPermission))
 	mux.HandleFunc("POST /files/{id}/public-link", a.requireAuth(a.publicPermission))
+	mux.HandleFunc("GET /recent", a.requireAuth(a.listRecent))
 	mux.HandleFunc("GET /starred", a.requireAuth(a.listStarred))
 	mux.HandleFunc("POST /files/{id}/star", a.requireAuth(a.starFile))
 	mux.HandleFunc("POST /folders/{id}/star", a.requireAuth(a.starFolder))
@@ -2630,6 +2631,62 @@ func (a *App) removeUploadRecord(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// listRecent returns the most recently updated files, newest first.
+func (a *App) listRecent(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	limit := 50
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 && v <= 200 {
+		limit = v
+	}
+	accountID := strings.TrimSpace(r.URL.Query().Get("accountId"))
+
+	where := "WHERE f.user_id=? AND f.status='active'"
+	args := []any{user.ID}
+	if accountID != "" && accountID != "all" {
+		where += " AND f.connected_account_id=?"
+		args = append(args, accountID)
+	}
+
+	rows, err := a.DB.Query(`SELECT f.id,f.name,f.mime_type,f.size_bytes,COALESCE(f.updated_at,''),COALESCE(f.created_at,''),
+		COALESCE(c.email,''),COALESCE(d.name,''),f.folder_id,COALESCE(f.starred,0)
+		FROM files f
+		LEFT JOIN connected_accounts c ON c.id=f.connected_account_id
+		LEFT JOIN folders d ON d.id=f.folder_id
+		`+where+` ORDER BY datetime(f.updated_at) DESC, f.id DESC LIMIT ?`, append(args, limit)...)
+	if err != nil {
+		writeError(w, 500, "RECENT_FAILED", "Unable to list recent files: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	files := []map[string]any{}
+	for rows.Next() {
+		var id, name, mimeType, updatedAt, createdAt, email, folderName string
+		var size int64
+		var starred int
+		var folderID sql.NullString
+		if err := rows.Scan(&id, &name, &mimeType, &size, &updatedAt, &createdAt, &email, &folderName, &folderID, &starred); err != nil {
+			writeError(w, 500, "RECENT_FAILED", "Unable to read recent files.")
+			return
+		}
+		var folder any
+		if folderID.Valid {
+			folder = map[string]string{"id": folderID.String, "name": folderName}
+		}
+		files = append(files, map[string]any{"id": id, "name": name, "mimeType": mimeType, "sizeBytes": fmt.Sprint(size),
+			"updatedAt": updatedAt, "createdAt": createdAt, "accountEmail": email, "folder": folder, "starred": starred == 1})
+	}
+
+	// Activity counters for the header cards. SQLite compares ISO-8601 text correctly.
+	var last24h, last7d int
+	// datetime() normalises both stored formats (Go writes RFC3339 with 'T', CURRENT_TIMESTAMP
+	// writes a space) — raw string comparison between them sorts wrong and breaks the windows.
+	_ = a.DB.QueryRow(`SELECT COUNT(*) FROM files WHERE user_id=? AND status='active' AND datetime(updated_at) >= datetime('now','-1 day')`, user.ID).Scan(&last24h)
+	_ = a.DB.QueryRow(`SELECT COUNT(*) FROM files WHERE user_id=? AND status='active' AND datetime(updated_at) >= datetime('now','-7 day')`, user.ID).Scan(&last7d)
+
+	writeJSON(w, http.StatusOK, map[string]any{"files": files, "total": len(files), "limit": limit, "last24h": last24h, "last7d": last7d})
+}
+
 // starFile toggles the starred flag on a file.
 func (a *App) starFile(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
@@ -2708,7 +2765,7 @@ func (a *App) listStarred(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN connected_accounts c ON c.id=f.connected_account_id
 		LEFT JOIN folders d ON d.id=f.folder_id
 		WHERE f.user_id=? AND f.status='active' AND f.starred=1
-		ORDER BY f.updated_at DESC`, user.ID)
+		ORDER BY datetime(f.updated_at) DESC, f.id DESC`, user.ID)
 	if err != nil {
 		writeError(w, 500, "STARRED_FAILED", "Unable to list starred files: "+err.Error())
 		return
@@ -2727,7 +2784,7 @@ func (a *App) listStarred(w http.ResponseWriter, r *http.Request) {
 
 	folders := []map[string]any{}
 	frows, err := a.DB.Query(`SELECT id,name,COALESCE(color,''),COALESCE(icon_url,''),COALESCE(updated_at,'')
-		FROM folders WHERE user_id=? AND starred=1 AND deleted_at IS NULL ORDER BY updated_at DESC`, user.ID)
+		FROM folders WHERE user_id=? AND starred=1 AND deleted_at IS NULL ORDER BY datetime(updated_at) DESC, id DESC`, user.ID)
 	if err != nil {
 		writeError(w, 500, "STARRED_FAILED", "Unable to list starred folders: "+err.Error())
 		return

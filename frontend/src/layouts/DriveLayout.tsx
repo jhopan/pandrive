@@ -27,6 +27,7 @@ import {
   UploadCloud,
   HeartPulse,
   Star,
+  Clock,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { BrandLogo } from '@/components/drive/BrandLogo'
@@ -39,6 +40,7 @@ import { cn } from '@/lib/utils'
 const menu = [
   { label: 'All Files', icon: FileArchive, href: '/all-files' },
   { label: 'Starred', icon: Star, href: '/starred' },
+  { label: 'Recent', icon: Clock, href: '/recent' },
   { label: 'Trash', icon: Trash2, href: '/trash' },
   { label: 'Duplicates', icon: CopyX, href: '/duplicates' },
   { label: 'Storage', icon: BarChart3, href: '/storage' },
