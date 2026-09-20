@@ -552,3 +552,35 @@ git commit -m "fix: bug Y"
 
 **Rule:** Every git commit MUST be immediately followed by git push origin main.
 
+### 🎨 Branding & UI Assets
+
+**Single source of truth for the app mark:** `frontend/public/logo.png` (512×512).
+
+Derived assets, all generated from it (do not hand-edit them separately):
+
+| File | Size | Used by |
+|---|---|---|
+| `logo.png` | 512×512 | `BrandLogo` (sidebar + mobile header), login page, PWA 512 icon |
+| `logo-192.png` | 192×192 | PWA 192 icon, `<link rel="icon" sizes="192x192">` |
+| `apple-touch-icon.png` | 180×180 | iOS home-screen icon |
+| `favicon.png` | 64×64 | browser tab icon |
+| `maskable-icon.png` | 512×512 | Android adaptive icon (logo at ~78% on a matching background) |
+
+To replace the brand mark: drop the new square PNG over `frontend/public/logo.png`, regenerate the four
+derivatives (Pillow: `Image.open(src).convert('RGBA').resize((n, n), Image.LANCZOS)`, `optimize=True`), then
+rebuild the frontend and re-embed `frontend/dist` into `backend-go/dist`.
+
+**No third-party image CDNs in the UI.** Folder icons render from bundled SVGs (`FolderVisual` maps
+`lucide:*` names to local components; a custom `iconUrl` still falls back to the local folder icon on
+error), and avatars come from `src/lib/avatar.ts` (deterministic initial + colour as an inline SVG data
+URL). Third-party hosts only make the UI break under CSP changes, privacy blockers, or offline use — the
+only remaining external request is the Google Fonts stylesheet.
+
+**Header profile menu** (`components/drive/ProfileMenu.tsx`) sits next to the bell in *both* header
+variants and owns: Edit profile (name/email), Change password, Settings, Log out. The sidebar keeps nav
+only, grouped Files / Cleanup / System / Accounts with an internally scrolling `<nav>`.
+
+**Password changes:** `POST /auth/change-password` requires the current password, enforces ≥8 characters,
+rejects an unchanged password, revokes every other session and returns a fresh session pair;
+`PUT /auth/me` refuses a `password` field (`USE_CHANGE_PASSWORD`) so a stolen access token cannot rotate
+it. Both outcomes are audited (`password_change`, `password_change_failed`).
