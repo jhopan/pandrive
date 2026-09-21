@@ -1,11 +1,12 @@
 import { type FormEvent, useEffect, useRef, useState } from 'react'
-import { ChevronDown, KeyRound, LogOut, Settings, UserRound } from 'lucide-react'
+import { ChevronDown, KeyRound, Languages, LogOut, Settings, UserRound } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DummyModal } from '@/components/drive/DummyModal'
 import { Input } from '@/components/ui/input'
 import { apiFetch } from '@/lib/api'
 import { setAuthSession, type AuthUser } from '@/lib/auth'
 import { cn } from '@/lib/utils'
+import { useI18n } from '@/lib/i18n'
 
 // The profile lives in the header next to the bell so it is reachable from every page:
 // edit name/email, change the password (the old one is required by the server), or log out.
@@ -15,6 +16,7 @@ export function ProfileMenu({ user, onUserChange, onLogout, className }: {
   onLogout: () => void
   className?: string
 }) {
+  const { t, lang, setLang } = useI18n()
   const [open, setOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const [passwordOpen, setPasswordOpen] = useState(false)
@@ -131,11 +133,12 @@ export function ProfileMenu({ user, onUserChange, onLogout, className }: {
           </div>
           <div className="p-1.5">
             {message ? <p className="mx-1 mb-1 rounded-lg bg-emerald-50 px-2.5 py-2 text-[11px] font-semibold text-emerald-700">{message}</p> : null}
-            <MenuItem icon={UserRound} label="Edit profile" onClick={openProfile} />
-            <MenuItem icon={KeyRound} label="Change password" onClick={openPassword} />
-            <MenuItem icon={Settings} label="Settings" onClick={() => { setOpen(false); window.location.href = '/settings' }} />
+            <MenuItem icon={UserRound} label={t('Edit profile')} onClick={openProfile} />
+            <MenuItem icon={KeyRound} label={t('Change password')} onClick={openPassword} />
+            <MenuItem icon={Settings} label={t('Settings')} onClick={() => { setOpen(false); window.location.href = '/settings' }} />
+            <MenuItem icon={Languages} label={lang === 'id' ? 'Bahasa: Indonesia' : 'Language: English'} onClick={() => setLang(lang === 'en' ? 'id' : 'en')} />
             <div className="my-1 h-px bg-slate-100" />
-            <MenuItem icon={LogOut} label="Log out" onClick={() => { setOpen(false); onLogout() }} danger />
+            <MenuItem icon={LogOut} label={t('Log out')} onClick={() => { setOpen(false); onLogout() }} danger />
           </div>
         </div>
       ) : null}

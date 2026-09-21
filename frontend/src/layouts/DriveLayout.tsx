@@ -37,6 +37,7 @@ import { apiFetch, formatBytes } from '@/lib/api'
 import { useUpload } from '@/context/UploadContext'
 import { clearAuthSession, getStoredUser, updateStoredUser, type AuthUser } from '@/lib/auth'
 import { cn } from '@/lib/utils'
+import { useI18n } from '@/lib/i18n'
 
 // Grouped so fourteen destinations stay scannable: the sidebar scrolls internally instead of
 // stretching the page, and each group has a small heading.
@@ -136,6 +137,7 @@ function SystemInfoDropdown({ storage }: { storage: any }) {
 }
 
 function Sidebar({ onNavigate, storage, breakdown, onLogout, accounts = [] }: { onNavigate?: () => void; storage: StorageSummary | null; breakdown: StorageBreakdown; onLogout: () => void; accounts?: { id: string; email: string }[] }) {
+  const { t } = useI18n()
   const used = Number(storage?.usedBytes ?? 0)
   const total = Number(storage?.totalBytes ?? 0)
   const progress = total > 0 ? Math.min(100, (used / total) * 100) : 0
@@ -158,18 +160,18 @@ function Sidebar({ onNavigate, storage, breakdown, onLogout, accounts = [] }: { 
       <nav className="grid min-h-0 flex-1 gap-0.5 overflow-y-auto pr-0.5">
         {menuGroups.map((group) => (
           <div key={group.label}>
-            <p className="px-2.5 pb-0.5 pt-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">{group.label}</p>
+            <p className="px-2.5 pb-0.5 pt-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">{t(group.label)}</p>
             {group.items.map((item) => (
               <NavLink key={item.label} to={item.href} onClick={onNavigate} className={({ isActive }) => cn('inline-flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-[12.5px] font-semibold transition-colors', isActive ? 'bg-blue-600/10 text-blue-600' : 'text-slate-600 hover:bg-slate-200/50 hover:text-slate-900')}>
                 <item.icon className="h-3.5 w-3.5 shrink-0" />
-                <span className="truncate">{item.label}</span>
+                <span className="truncate">{t(item.label)}</span>
               </NavLink>
             ))}
           </div>
         ))}
         {accounts.length > 0 ? (
           <div>
-            <p className="px-2.5 pb-0.5 pt-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">Accounts</p>
+            <p className="px-2.5 pb-0.5 pt-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">{t('Accounts')}</p>
             {accounts.map((acc) => (
               <NavLink key={acc.id} to={`/all-files?accountId=${encodeURIComponent(acc.id)}`} onClick={onNavigate} className="inline-flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-[12px] font-semibold text-slate-500 transition-colors hover:bg-slate-200/50 hover:text-slate-900">
                 <HardDrive className="h-3.5 w-3.5 shrink-0" />
@@ -197,7 +199,7 @@ function Sidebar({ onNavigate, storage, breakdown, onLogout, accounts = [] }: { 
           <div className="h-full rounded-full bg-blue-600 transition-all duration-300" style={{ width: `${progress}%` }} />
         </div>
         <Button variant="danger" size="sm" className="mt-2 h-9 w-full justify-start px-3 text-[12.5px] font-bold" onClick={onLogout}>
-          <LogOut className="h-4 w-4" />Log Out
+          <LogOut className="h-4 w-4" />{t('Log Out')}
         </Button>
         <p className="mt-1.5 text-center text-[10px] text-slate-400">
           PanDrive by <a href="https://github.com/jhopan" target="_blank" rel="noopener noreferrer" className="font-semibold hover:underline">JhopanStore</a>
@@ -222,6 +224,7 @@ export function useDriveLayoutActions() {
 }
 
 export function DriveLayout() {
+  const { t, lang, setLang } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
   const [searchParams] = useSearchParams()
@@ -431,6 +434,9 @@ export function DriveLayout() {
                 </div>
               </div>
               <div className="flex gap-2">
+                <Button variant="outline" size="icon" aria-label="Toggle language" title="ID/EN" onClick={() => setLang(lang === 'en' ? 'id' : 'en')}>
+                  <span className="text-[11px] font-extrabold tracking-wide">{lang.toUpperCase()}</span>
+                </Button>
                 <Button variant="outline" size="icon" aria-label="Toggle theme" onClick={toggleTheme}>
                   {theme === 'light' ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
                 </Button>
@@ -447,7 +453,7 @@ export function DriveLayout() {
             <div className="relative w-full min-w-0 flex-1 lg:max-w-sm xl:max-w-xl">
               <form onSubmit={searchFiles} className="relative w-full">
                 <Search className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-500" />
-                <Input value={searchValue} onChange={(event) => setSearchValue(event.target.value)} placeholder="Search Documents" className="pl-11 pr-12" />
+                <Input value={searchValue} onChange={(event) => setSearchValue(event.target.value)} placeholder={t('Search Documents')} className="pl-11 pr-12" />
                 <button type="button" onClick={() => setFiltersOpen(!filtersOpen)} className={cn("absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-900 transition-colors", filtersOpen && "text-blue-600 hover:text-blue-700")} aria-label="Search filters"><SlidersHorizontal className="h-5 w-5" /></button>
               </form>
 

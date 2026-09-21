@@ -617,3 +617,13 @@ The VPS installs and updates **from GitHub Releases** (`deploy/vps-update.sh`, i
   `/uploads/queue`, `/storage/*`) collided with SPA page paths — hard refresh returned 401 JSON. They now
   live ONLY under `/api/*`; the unprefixed path falls through to the SPA. Never register a plain
   `GET /<page-path>` API route again.
+
+### 🌐 i18n ID/EN (v0.21.0)
+
+- `src/lib/i18n.tsx`: context + `ID` dictionary; keys are the EN source strings, missing key = fallback to
+  the key itself. Provider wraps the app in `main.tsx`; choice persisted at `pandrive.lang`.
+- Toggles: header pill (desktop + mobile), profile-menu Language row, login-card pill.
+- `PageHeader` applies `t()` centrally to `title`/`description` when they are plain strings, so every
+  page translates without per-page edits.
+- Sidebar labels are wrapped in `t()` in `DriveLayout` (groups + items + Accounts heading + Log Out).
+- When adding user-visible strings, put the English source as-is; add an `ID` entry only for Indonesian.

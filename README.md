@@ -235,6 +235,16 @@ Leave it disabled if you want to choose exactly when the service restarts.
   upload finished, transfer done, public link created, login failed, link expired. Default server
   `https://ntfy.sh`; point it at a self-hosted instance any time.
 
+## ID/EN language switch
+
+The UI ships bilingual (English default, Indonesian included):
+
+- Toggle: the **ID/EN pill** in the header (next to the theme button), the **Language** item in the
+  profile menu, and a pill on the login card. The choice persists in `localStorage` (`pandrive.lang`).
+- Implementation: a tiny context + dictionary (`src/lib/i18n.tsx`). Keys are the English source strings;
+  a missing translation falls back to the key itself, so adding a page costs nothing in EN mode.
+- `PageHeader` translates titles/descriptions centrally, so all pages switch at once.
+
 ## Security
 
 - Every response carries `Content-Security-Policy` (`default-src 'self'`, hashed inline bootstrap script, `object-src 'none'`, `frame-ancestors 'none'`), computed from the embedded SPA shell so a rebuilt frontend cannot silently break it.
