@@ -23,6 +23,7 @@ const DuplicatesPage = lazy(() => import('@/pages/DuplicatesPage').then(({ Dupli
 const StoragePage = lazy(() => import('@/pages/StoragePage').then(({ StoragePage }) => ({ default: StoragePage })))
 const TrashPage = lazy(() => import('@/pages/TrashPage').then(({ TrashPage }) => ({ default: TrashPage })))
 const GalleryPage = lazy(() => import('@/pages/GalleryPage').then(({ GalleryPage }) => ({ default: GalleryPage })))
+const ProxyPage = lazy(() => import('@/pages/ProxyPage').then(({ ProxyPage }) => ({ default: ProxyPage })))
 
 function PageLoader() {
   return <main className="grid min-h-screen place-items-center text-sm font-semibold text-slate-500">Loading PanDrive…</main>
@@ -55,6 +56,7 @@ function App() {
               <Route path="health" element={<HealthPage />} />
               <Route path="rate-limits" element={<RateLimitsPage />} />
               <Route path="settings" element={<SettingsPage />} />
+              <Route path="proxy" element={<ProxyPage />} />
             </Route>
           </Route>
           <Route path="*" element={<Navigate to="/all-files" replace />} />

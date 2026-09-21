@@ -685,3 +685,14 @@ covered it; keep `--retry 3` on every curl.
   extras). Written with UTF-8 **BOM** (PS5 misparses multibyte without it — keep the BOM!) and plain
   hyphens (no em-dash) in strings.
 - Verified: bash syntax OK; sandbox latest + pinned-0.24.0 on MSYS (windows asset path); PS Parser OK.
+
+### 🌐 Reverse Proxy menu (v0.26.0)
+
+- `GET/PUT /api/settings/proxy` (`proxy_provider` = none|caddy|cloudflare, `proxy_domain`);
+  `POST /api/settings/proxy/caddyfile` generates a Caddyfile (`reverse_proxy 127.0.0.1:<port>`) into
+  `configDir()/pandrive/Caddyfile`; on root+linux+systemd ALSO to /etc/caddy and restarts caddy.
+- `configDir()` = os.UserConfigDir()/pandrive fallback "." — XDG_CONFIG_HOME/AppData override works in
+  tests (t.Setenv both).
+- Tunnel status reads TUNNEL_ID/TUNNEL_TOKEN from env or `.env` (Config struct has no tunnel fields).
+- UI: `/proxy` page (System group). Provider validation: only none/caddy/cloudflare; domain must
+  contain a dot.

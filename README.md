@@ -315,6 +315,12 @@ upgrades in place without touching the database.
 
 ## HTTPS with Caddy (or Cloudflare Tunnel)
 
+In-app manager: **Reverse Proxy** menu (System group) — pick none / caddy / cloudflare, set the domain,
+and generate the Caddyfile with one click (root+systemd: written to /etc/caddy and caddy restarted
+automatically).
+
+## HTTPS with Caddy (or Cloudflare Tunnel)
+
 PanDrive is HTTP on `127.0.0.1:4000`. Two supported ways to get public HTTPS:
 
 **Option A — Cloudflare Tunnel (no open ports, no TLS on the box):** see "Public access (Cloudflare Tunnel)"

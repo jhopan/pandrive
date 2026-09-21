@@ -540,6 +540,9 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("PATCH /api/admin/users/{id}", a.requireAuth(a.requireAdmin(a.updateUser)))
 	mux.HandleFunc("GET /api/settings/trash", a.requireAuth(a.getTrashSettings))
 	mux.HandleFunc("PUT /api/settings/trash", a.requireAuth(a.putTrashSettings))
+	mux.HandleFunc("GET /api/settings/proxy", a.requireAuth(a.getProxySettings))
+	mux.HandleFunc("PUT /api/settings/proxy", a.requireAuth(a.putProxySettings))
+	mux.HandleFunc("POST /api/settings/proxy/caddyfile", a.requireAuth(a.writeCaddyfile))
 	mux.HandleFunc("GET /system/google-config", a.requireAuth(a.getGoogleConfig))
 	mux.HandleFunc("POST /system/google-config", a.requireAuth(a.saveGoogleConfig))
 	mux.HandleFunc("DELETE /system/google-config/{id}", a.requireAuth(a.deleteGoogleConfig))
@@ -3800,6 +3803,148 @@ func (a *App) putTrashSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	a.logActivity(r, user.ID, "", "settings_update", "user", user.ID, user.Email, 0, "Trash auto-purge enabled: "+fmt.Sprint(n)+" days")
 	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "days": n})
+}
+
+// ---- reverse proxy settings (Caddy / Cloudflare Tunnel) ----
+
+// getProxySettings reports the chosen provider, domain, and whether the config files exist.
+func (a *App) getProxySettings(w http.ResponseWriter, r *http.Request) {
+	provider := a.settingValue("proxy_provider")
+	domain := a.settingValue("proxy_domain")
+	dir := configDir()
+	caddyfile := dir + "/Caddyfile"
+	caddyExists := false
+	if st, err := os.Stat(caddyfile); err == nil && !st.IsDir() {
+		caddyExists = true
+	}
+	tunnelID := os.Getenv("TUNNEL_ID")
+	tunnelToken := os.Getenv("TUNNEL_TOKEN")
+	if tunnelID == "" || tunnelToken == "" {
+		if b, err := os.ReadFile(".env"); err == nil {
+			for _, line := range strings.Split(string(b), "\n") {
+				parts := strings.SplitN(strings.TrimSpace(line), "=", 2)
+				if len(parts) != 2 {
+					continue
+				}
+				if parts[0] == "TUNNEL_ID" && tunnelID == "" {
+					tunnelID = parts[1]
+				}
+				if parts[0] == "TUNNEL_TOKEN" && tunnelToken == "" {
+					tunnelToken = parts[1]
+				}
+			}
+		}
+	}
+	enabled := tunnelID != "" || tunnelToken != ""
+	tunnel := map[string]any{"enabled": enabled, "mode": map[bool]string{true: "TUNNEL_ID (tunnel.yml)", false: "off"}[tunnelID != ""]}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"provider": provider, "domain": domain,
+		"caddy":  map[string]any{"configPath": caddyfile, "written": caddyExists, "installed": commandExists("caddy")},
+		"tunnel": tunnel,
+	})
+}
+
+// putProxySettings stores provider (none|caddy|cloudflare) + domain.
+func (a *App) putProxySettings(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	var body struct {
+		Provider string `json:"provider"`
+		Domain   string `json:"domain"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, 400, "BAD_REQUEST", "Invalid request body.")
+		return
+	}
+	provider := strings.ToLower(strings.TrimSpace(body.Provider))
+	domain := strings.ToLower(strings.TrimSpace(body.Domain))
+	if provider != "" && provider != "none" && provider != "caddy" && provider != "cloudflare" {
+		writeError(w, 400, "BAD_PROVIDER", "Provider must be none, caddy or cloudflare.")
+		return
+	}
+	if domain != "" && !strings.Contains(domain, ".") {
+		writeError(w, 400, "BAD_DOMAIN", "Domain must look like drive.example.com.")
+		return
+	}
+	if err := a.setSetting("proxy_provider", provider); err != nil {
+		writeError(w, 500, "SETTINGS_FAILED", "Unable to save settings.")
+		return
+	}
+	if err := a.setSetting("proxy_domain", domain); err != nil {
+		writeError(w, 500, "SETTINGS_FAILED", "Unable to save settings.")
+		return
+	}
+	a.logActivity(r, user.ID, "", "settings_update", "user", user.ID, user.Email, 0, "Reverse proxy set to "+provider+" ("+domain+")")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "provider": provider, "domain": domain})
+}
+
+// writeCaddyfile generates a minimal Caddyfile for the stored domain (or the one posted) and,
+// when run as root with systemd, drops it into /etc/caddy and restarts caddy.
+func (a *App) writeCaddyfile(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	var body struct {
+		Domain   string `json:"domain"`
+		AppPort  string `json:"appPort"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, 400, "BAD_REQUEST", "Invalid request body.")
+		return
+	}
+	domain := strings.ToLower(strings.TrimSpace(body.Domain))
+	if domain == "" {
+		domain = a.settingValue("proxy_domain")
+	}
+	if domain == "" || !strings.Contains(domain, ".") {
+		writeError(w, 400, "BAD_DOMAIN", "Set a domain first (drive.example.com).")
+		return
+	}
+	port := strings.TrimSpace(body.AppPort)
+	if port == "" {
+		port = a.Config.AppPort
+	}
+	if port == "" {
+		port = "4000"
+	}
+	if _, err := fmt.Sscan(port, new(int)); err != nil {
+		writeError(w, 400, "BAD_REQUEST", "appPort must be a number.")
+		return
+	}
+	content := fmt.Sprintf("# PanDrive HTTPS reverse proxy (generated %s)\n%s {\n    reverse_proxy 127.0.0.1:%s\n}\n", time.Now().UTC().Format(time.RFC3339), domain, port)
+	dir := configDir()
+	local := dir + "/Caddyfile"
+	if err := os.WriteFile(local, []byte(content), 0o644); err != nil {
+		writeError(w, 500, "CADDYFILE_FAILED", "Unable to write Caddyfile.")
+		return
+	}
+	reloaded := false
+	if runtime.GOOS == "linux" && os.Geteuid() == 0 {
+		_ = os.MkdirAll("/etc/caddy", 0o755)
+		if err := os.WriteFile("/etc/caddy/Caddyfile", []byte(content), 0o644); err == nil {
+			if b, err := exec.Command("systemctl", "restart", "caddy").CombinedOutput(); err == nil {
+				reloaded = true
+			} else {
+				log.Printf("caddy restart failed: %s", strings.TrimSpace(string(b)))
+			}
+		}
+	}
+	a.logActivity(r, user.ID, "", "settings_update", "user", user.ID, user.Email, 0, "Caddyfile written for "+domain)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "path": local, "domain": domain, "systemdReloaded": reloaded})
+}
+
+// commandExists reports whether an executable is on PATH.
+func commandExists(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+// configDir returns a writable per-user config directory (falls back to the working dir).
+func configDir() string {
+	if dir, err := os.UserConfigDir(); err == nil {
+		full := dir + "/pandrive"
+		if err := os.MkdirAll(full, 0o755); err == nil {
+			return full
+		}
+	}
+	return "."
 }
 
 // purgeOldTrash permanently deletes Drive trash files older than the configured age, per account,

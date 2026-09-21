@@ -27,6 +27,7 @@ import {
   HeartPulse,
   Star,
   Clock,
+  Globe,
   Image,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -70,6 +71,7 @@ const menuGroups: { label: string; items: { label: string; icon: React.ElementTy
       { label: 'Rate Limits', icon: Gauge, href: '/rate-limits' },
       { label: 'Quota Tracker', icon: Gauge, href: '/quota' },
       { label: 'Settings', icon: Settings, href: '/settings' },
+      { label: 'Reverse Proxy', icon: Globe, href: '/proxy' },
     ],
   },
 ]
