@@ -122,6 +122,7 @@ func clientIP(r *http.Request) string {
 
 type authUser struct {
 	ID    string `json:"id"`
+	Role  string `json:"role,omitempty"`
 	Name  string `json:"name"`
 	Email string `json:"email"`
 }
@@ -320,6 +321,8 @@ CREATE TABLE IF NOT EXISTS app_settings (
 		`ALTER TABLE files ADD COLUMN thumbnail_link TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE share_links ADD COLUMN expires_at TEXT`,
 		`ALTER TABLE share_links ADD COLUMN auto_revoke INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'`,
+		`ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := a.DB.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return err
@@ -435,7 +438,7 @@ func (a *App) ensureInitialAdminPassword() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err = a.DB.Exec(`INSERT INTO users (id,name,email,password_hash) VALUES (?,?,?,?)`, randomID(), "Administrator", "admin@gmail.com", string(hash)); err != nil {
+	if _, err = a.DB.Exec(`INSERT INTO users (id,name,email,password_hash,role) VALUES (?,?,?,?,?)`, randomID(), "Administrator", "admin@gmail.com", string(hash), "admin"); err != nil {
 		return "", err
 	}
 	log.Printf("Initial admin account created: admin@gmail.com / %s  (change this password after first login)", password)
@@ -533,6 +536,10 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("GET /settings/notifications", a.requireAuth(a.getNotificationSettings))
 	mux.HandleFunc("PUT /settings/notifications", a.requireAuth(a.putNotificationSettings))
 	mux.HandleFunc("POST /settings/notifications/test", a.requireAuth(a.testNotification))
+	mux.HandleFunc("GET /api/admin/users", a.requireAuth(a.requireAdmin(a.listUsers)))
+	mux.HandleFunc("PATCH /api/admin/users/{id}", a.requireAuth(a.requireAdmin(a.updateUser)))
+	mux.HandleFunc("GET /api/settings/trash", a.requireAuth(a.getTrashSettings))
+	mux.HandleFunc("PUT /api/settings/trash", a.requireAuth(a.putTrashSettings))
 	mux.HandleFunc("GET /system/google-config", a.requireAuth(a.getGoogleConfig))
 	mux.HandleFunc("POST /system/google-config", a.requireAuth(a.saveGoogleConfig))
 	mux.HandleFunc("DELETE /system/google-config/{id}", a.requireAuth(a.deleteGoogleConfig))
@@ -612,8 +619,8 @@ func (a *App) health(w http.ResponseWriter, _ *http.Request) {
 
 func (a *App) register(w http.ResponseWriter, r *http.Request) {
 	var count int
-	if err := a.DB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err == nil && count > 0 {
-		writeError(w, http.StatusForbidden, "REGISTRATION_DISABLED", "Registration is disabled. Use the initial administrator account.")
+	if err := a.DB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err == nil && count > 0 && a.settingValue("open_registration") != "1" {
+		writeError(w, http.StatusForbidden, "REGISTRATION_DISABLED", "Registration is disabled. Ask an administrator or enable it in Settings.")
 		return
 	}
 
@@ -649,7 +656,12 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	}
 	var user authUser
 	var hash string
-	err := a.DB.QueryRow(`SELECT id,name,email,password_hash FROM users WHERE email = ? AND status = 'active'`, strings.ToLower(strings.TrimSpace(body.Email))).Scan(&user.ID, &user.Name, &user.Email, &hash)
+	var disabled int
+	err := a.DB.QueryRow(`SELECT id,name,email,COALESCE(role,'user'),password_hash,COALESCE(disabled,0) FROM users WHERE email = ? AND status = 'active'`, strings.ToLower(strings.TrimSpace(body.Email))).Scan(&user.ID, &user.Name, &user.Email, &user.Role, &hash, &disabled)
+	if err == nil && disabled == 1 {
+		writeError(w, http.StatusForbidden, "ACCOUNT_DISABLED", "This account has been disabled by an administrator.")
+		return
+	}
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(body.Password)) != nil {
 		a.loginRecordFailure(ip)
 		// Attribute the attempt to the account when it exists, so the owner sees it in their audit trail.
@@ -2936,6 +2948,11 @@ func main() {
 				} else if revoked > 0 {
 					log.Printf("auto-revoked %d expired share link(s)", revoked)
 				}
+				if purged, err := app.purgeOldTrash(); err != nil {
+					log.Printf("trash auto-purge failed: %v", err)
+				} else if purged > 0 {
+					log.Printf("trash auto-purge: %d file(s) permanently deleted", purged)
+				}
 			}
 			time.Sleep(5 * time.Minute)
 		}
@@ -3652,6 +3669,189 @@ func (a *App) testNotification(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "sent", "server": server, "topic": topic})
+}
+
+// requireAdmin wraps a handler for role='admin' users only.
+func (a *App) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user := r.Context().Value(userKey).(authUser)
+		var role string
+		_ = a.DB.QueryRow(`SELECT COALESCE(role,'user') FROM users WHERE id=?`, user.ID).Scan(&role)
+		if role != "admin" {
+			writeError(w, http.StatusForbidden, "ADMIN_REQUIRED", "Administrator access required.")
+			return
+		}
+		next(w, r)
+	}
+}
+
+// listUsers shows every account with its connected-Drive count (admin only).
+func (a *App) listUsers(w http.ResponseWriter, r *http.Request) {
+	rows, err := a.DB.Query(`SELECT u.id, u.name, u.email, COALESCE(u.role,'user'), COALESCE(u.disabled,0), u.created_at,
+		(SELECT COUNT(*) FROM connected_accounts c WHERE c.user_id=u.id AND c.status='connected'),
+		(SELECT COUNT(*) FROM files f WHERE f.user_id=u.id AND f.status='active')
+		FROM users u ORDER BY u.created_at`)
+	if err != nil {
+		writeError(w, 500, "USERS_FAILED", "Unable to list users.")
+		return
+	}
+	defer rows.Close()
+	users := []map[string]any{}
+	for rows.Next() {
+		var id, name, email, role, createdAt string
+		var disabled, accounts, files int
+		if err := rows.Scan(&id, &name, &email, &role, &disabled, &createdAt, &accounts, &files); err != nil {
+			writeError(w, 500, "USERS_FAILED", "Unable to read users.")
+			return
+		}
+		users = append(users, map[string]any{"id": id, "name": name, "email": email, "role": role, "disabled": disabled == 1, "createdAt": createdAt, "connectedAccounts": accounts, "files": files})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"users": users, "total": len(users)})
+}
+
+// updateUser disables/enables an account or toggles its role. Self-demotion is blocked so an
+// admin cannot lock themselves out of the admin area.
+func (a *App) updateUser(w http.ResponseWriter, r *http.Request) {
+	caller := r.Context().Value(userKey).(authUser)
+	targetID := r.PathValue("id")
+	var body struct {
+		Disabled *bool   `json:"disabled"`
+		Role     *string `json:"role"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, 400, "BAD_REQUEST", "Invalid request body.")
+		return
+	}
+	var exists string
+	if err := a.DB.QueryRow(`SELECT id FROM users WHERE id=?`, targetID).Scan(&exists); err != nil {
+		writeError(w, http.StatusNotFound, "USER_NOT_FOUND", "User not found.")
+		return
+	}
+	if targetID == caller.ID && ((body.Disabled != nil && *body.Disabled) || (body.Role != nil && *body.Role != "admin")) {
+		writeError(w, 400, "SELF_LOCKOUT", "You cannot disable your own account or demote yourself.")
+		return
+	}
+	if body.Disabled != nil {
+		if _, err := a.DB.Exec(`UPDATE users SET disabled=? WHERE id=?`, boolToInt(*body.Disabled), targetID); err != nil {
+			writeError(w, 500, "UPDATE_FAILED", "Unable to update the user.")
+			return
+		}
+		if *body.Disabled {
+			a.DB.Exec(`UPDATE user_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL`, time.Now().UTC().Format(time.RFC3339Nano), targetID)
+		}
+	}
+	if body.Role != nil {
+		role := strings.TrimSpace(*body.Role)
+		if role != "admin" && role != "user" {
+			writeError(w, 400, "BAD_ROLE", "Role must be admin or user.")
+			return
+		}
+		if _, err := a.DB.Exec(`UPDATE users SET role=? WHERE id=?`, role, targetID); err != nil {
+			writeError(w, 500, "UPDATE_FAILED", "Unable to update the user.")
+			return
+		}
+	}
+	a.logActivity(r, caller.ID, "", "user_update", "user", targetID, targetID, 0, "Admin updated a user")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// ---- trash auto-purge settings ----
+
+func (a *App) getTrashSettings(w http.ResponseWriter, r *http.Request) {
+	days := a.settingValue("trash_autopurge_days")
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": days != "" && days != "0", "days": days})
+}
+
+// putTrashSettings stores the purge age in days (0/empty = disabled; 1..365 when enabled).
+func (a *App) putTrashSettings(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	var body struct {
+		Days string `json:"days"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, 400, "BAD_REQUEST", "Invalid request body.")
+		return
+	}
+	days := strings.TrimSpace(body.Days)
+	if days == "" || days == "0" {
+		if err := a.setSetting("trash_autopurge_days", ""); err != nil {
+			writeError(w, 500, "SETTINGS_FAILED", "Unable to save settings.")
+			return
+		}
+		a.logActivity(r, user.ID, "", "settings_update", "user", user.ID, user.Email, 0, "Trash auto-purge disabled")
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "days": ""})
+		return
+	}
+	var n int
+	if _, err := fmt.Sscan(days, &n); err != nil || n < 1 || n > 365 {
+		writeError(w, 400, "BAD_REQUEST", "days must be between 1 and 365.")
+		return
+	}
+	if err := a.setSetting("trash_autopurge_days", fmt.Sprint(n)); err != nil {
+		writeError(w, 500, "SETTINGS_FAILED", "Unable to save settings.")
+		return
+	}
+	a.logActivity(r, user.ID, "", "settings_update", "user", user.ID, user.Email, 0, "Trash auto-purge enabled: "+fmt.Sprint(n)+" days")
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "days": n})
+}
+
+// purgeOldTrash permanently deletes Drive trash files older than the configured age, per account,
+// and clears the local rows. Opt-in via trash_autopurge_days; every deletion is notified + logged.
+func (a *App) purgeOldTrash() (int, error) {
+	days := a.settingValue("trash_autopurge_days")
+	if days == "" || days == "0" {
+		return 0, nil
+	}
+	var n int
+	if _, err := fmt.Sscan(days, &n); err != nil || n < 1 {
+		return 0, nil
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -n).Format(time.RFC3339Nano)
+	rows, err := a.DB.Query(`SELECT f.id, f.connected_account_id, f.provider_file_id, f.user_id, COALESCE(f.name,'')
+		FROM files f WHERE f.status='deleted' AND f.deleted_at IS NOT NULL AND datetime(f.deleted_at) <= datetime(?)`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	type victim struct{ id, accountID, providerFileID, userID, name string }
+	var targets []victim
+	for rows.Next() {
+		var v victim
+		if err := rows.Scan(&v.id, &v.accountID, &v.providerFileID, &v.userID, &v.name); err == nil {
+			targets = append(targets, v)
+		}
+	}
+	rows.Close()
+	purged := 0
+	for _, v := range targets {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		token, err := a.getGoogleToken(ctx, v.accountID, false)
+		if err == nil {
+			req, err := http.NewRequestWithContext(ctx, http.MethodDelete, a.GoogleDriveAPIURL+"/files/"+url.PathEscape(v.providerFileID), nil)
+			if err == nil {
+				req.Header.Set("Authorization", "Bearer "+token)
+				if resp, err := a.HTTPClient.Do(req); err == nil {
+					resp.Body.Close()
+				}
+			}
+		}
+		cancel()
+		if _, err := a.DB.Exec(`DELETE FROM files WHERE id=?`, v.id); err != nil {
+			return purged, err
+		}
+		purged++
+		a.notify(v.userID, "Sampah dibersihkan", v.name+" dihapus permanen dari Drive (lewat "+days+" hari di sampah).", "wastebasket", "low")
+	}
+	if purged > 0 {
+		log.Printf("auto-purge: permanently deleted %d trashed file(s) older than %s day(s)", purged, days)
+	}
+	return purged, nil
 }
 
 
