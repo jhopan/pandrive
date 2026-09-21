@@ -670,3 +670,18 @@ without SHA256SUMS, fresh `.env` seeded with random secrets only when absent, sy
 health-checked when run as root, `.prev` kept on upgrade. Env overrides: `GITHUB_REPO`, `INSTALL_DIR`,
 `SERVICE`. Note: GitHub objects redirect can 504 transiently — the retry loop in the test harness
 covered it; keep `--retry 3` on every curl.
+
+### 🧰 Installer v2 (multi-platform + Go/Caddy extras)
+
+- `deploy/install.sh`: auto-detects OS (Linux/macOS/Termux/Windows-MSYS via `TERMUX_VERSION`, `uname -s`)
+  and arch (amd64/arm64; armv7 mapped to arm64 asset). Asset `pandrive-<goos>-<arch>[.exe]`.
+- Service per platform: systemd (root/Linux), launchd agent (macOS), manual hint (Termux, MSYS).
+- `--with-go`: installs the Go toolchain **only for building from source** (apt golang-go or go.dev tarball
+  to /usr/local/go; pkg in Termux; brew on macOS; winget on Windows) — the app binary is self-contained
+  and never needs Go.
+- `--with-caddy domain`: downloads Caddy, writes a Caddyfile (`reverse_proxy 127.0.0.1:4000`), starts the
+  service when root. HTTPS cert + renewal automatic (DNS + ports 80/443 required).
+- `deploy/install.ps1` for native Windows: same flow (checksum, .env once, sc.exe service, winget
+  extras). Written with UTF-8 **BOM** (PS5 misparses multibyte without it — keep the BOM!) and plain
+  hyphens (no em-dash) in strings.
+- Verified: bash syntax OK; sandbox latest + pinned-0.24.0 on MSYS (windows asset path); PS Parser OK.

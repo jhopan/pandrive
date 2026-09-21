@@ -282,9 +282,21 @@ v0.24.1 is a tested stability release: 52 backend tests pass, all API endpoints 
 production over the tunnel), every SPA page (incl. hard refresh deep-links), i18n switch, share pages,
 multi-user gates and trash auto-purge were exercised end to end.
 
-## One-line install
+## One-line install (Linux / macOS / Termux)
 
-Linux server (x86_64 / arm64), straight from GitHub Releases — checksum-verified:
+Straight from GitHub Releases — checksum-verified, auto-detects OS and CPU (amd64 / arm64):
+
+| Platform | Command |
+|---|---|
+| Linux (Debian/Ubuntu/Armbian, root) | `curl -fsSL https://raw.githubusercontent.com/jhopan/pandrive/master/deploy/install.sh \| bash` |
+| macOS (Intel & Apple Silicon) | `curl -fsSL https://raw.githubusercontent.com/jhopan/pandrive/master/deploy/install.sh \| bash` (launchd agent) |
+| Termux (Android) | same one-liner in Termux (binary only, run manually) |
+| Windows | `powershell -ExecutionPolicy Bypass -File install.ps1` (download `deploy/install.ps1`) |
+| Docker | `docker run -v pandrive-data:/data -p 4000:4000 ghcr.io/jhopan/pandrive` |
+
+Pinned version: `... \| bash -s -- v0.24.4`. Optional extras: `--with-go` (Go toolchain, only needed to
+build from source — the app itself is self-contained), `--with-caddy drive.domain.com` (HTTPS reverse proxy).
+Re-running the same command upgrades in place (database untouched).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jhopan/pandrive/master/deploy/install.sh | bash
@@ -300,6 +312,38 @@ The script downloads `pandrive-linux-<arch>`, verifies it against the release's 
 `/opt/9drive`, seeds a fresh `.env` with random secrets (never overwrites one), and — when run as root —
 creates and starts the `9drive` systemd service with automatic rollback kept as `.prev`. Re-running it
 upgrades in place without touching the database.
+
+## HTTPS with Caddy (or Cloudflare Tunnel)
+
+PanDrive is HTTP on `127.0.0.1:4000`. Two supported ways to get public HTTPS:
+
+**Option A — Cloudflare Tunnel (no open ports, no TLS on the box):** see "Public access (Cloudflare Tunnel)"
+above. `TUNNEL_ID` mode runs the tunnel inside the app.
+
+**Option B — Caddy (direct, auto-HTTPS):** Caddy obtains and renews the certificate automatically.
+
+Install together with the app:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jhopan/pandrive/master/deploy/install.sh | bash -s -- --with-caddy drive.domainmu.com
+```
+
+Or manually:
+
+1. Install Caddy (script above does it, or `apt install caddy` / `brew install caddy` / `winget install CaddyServer.Caddy`).
+2. Point the domain's DNS A/AAAA record at the server; open ports 80 + 443.
+3. `Caddyfile` (installer writes it, or write by hand):
+
+```
+drive.domainmu.com {
+    reverse_proxy 127.0.0.1:4000
+}
+```
+
+4. Run: `caddy start --config /opt/9drive/Caddyfile` (or systemd: `systemctl enable --now caddy`).
+
+That is the entire configuration — HTTPS, certificate renewal and HTTP→HTTPS redirect are automatic.
+Nginx works equally well but needs certbot + manual TLS config; Caddy is recommended for simplicity.
 
 ## Security
 
