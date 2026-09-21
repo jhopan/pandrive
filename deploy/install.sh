@@ -56,9 +56,17 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 echo "==> Downloading ${TAG} (${ASSET})"
-curl -fsSL --retry 3 --retry-delay 2 -o "${TMP}/${ASSET}" "${BASE}/${ASSET}" \
-  || { echo "release ${TAG} has no ${ASSET} asset" >&2; exit 1; }
-curl -fsSL --retry 3 --retry-delay 2 -o "${TMP}/SHA256SUMS" "${BASE}/SHA256SUMS" \
+fetch() { # fetch <url> <out>: 3 attempts, tolerating resets/504s from the CDN redirects
+  local i
+  for i in 1 2 3; do
+    if curl -fsSL --retry 2 --retry-delay 2 -o "$2" "$1"; then return 0; fi
+    sleep 3
+  done
+  return 1
+}
+fetch "${BASE}/${ASSET}" "${TMP}/${ASSET}" \
+  || { echo "release ${TAG} has no ${ASSET} asset (or download failed 3x)" >&2; exit 1; }
+fetch "${BASE}/SHA256SUMS" "${TMP}/SHA256SUMS" \
   || { echo "release ${TAG} does not publish SHA256SUMS — refusing to install unverified" >&2; exit 1; }
 ( cd "$TMP" && grep " ${ASSET}\$" SHA256SUMS | sha256sum -c - ) \
   || { echo "checksum verification failed — nothing changed" >&2; exit 1; }
