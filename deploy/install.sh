@@ -120,5 +120,5 @@ EOF
 fi
 
 echo "==> PanDrive ${TAG} installed at ${INSTALL_DIR}/${ASSET}"
-echo "    Update later with: sudo ${INSTALL_DIR}/$(basename "$0" 2>/dev/null || echo pandrive-update) 2>/dev/null || curl -fsSL https://raw.githubusercontent.com/${REPO}/master/deploy/vps-update.sh | bash -s --"
-echo "    (or: sudo install -m 755 deploy/vps-update.sh /usr/local/bin/pandrive-update && pandrive-update)"
+echo "    Update later with:"
+echo "      curl -fsSL https://raw.githubusercontent.com/${REPO}/master/deploy/install.sh | bash   (upgrade in place)"
