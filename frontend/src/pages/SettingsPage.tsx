@@ -10,6 +10,7 @@ import { apiFetch, formatBytes, API_URL } from '@/lib/api'
 import { getAvatarUrl } from '@/lib/avatar'
 import { getStoredUser, getAccessToken, clearAuthSession } from '@/lib/auth'
 
+type AdminUser = { id: string; name: string; email: string; role: string; disabled: boolean; createdAt: string; connectedAccounts: number; files: number }
 type ConnectedAccount = { id: string; provider: string; email: string; displayName?: string | null; status: string; needsReconnect?: boolean; storageAccount?: { totalBytes: string | null; usedBytes: string; availableBytes: string | null; lastSyncedAt: string | null } | null }
 
 function providerLabel(provider: string) {
@@ -34,6 +35,9 @@ export function SettingsPage() {
   const [ntfyTopic, setNtfyTopic] = useState('')
   const [ntfyBusy, setNtfyBusy] = useState(false)
   const [ntfyTest, setNtfyTest] = useState('')
+  const [purgeDays, setPurgeDays] = useState('')
+  const [purgeSaved, setPurgeSaved] = useState('')
+  const [users, setUsers] = useState<AdminUser[]>([])
   const [message, setMessage] = useState('')
   const [connecting, setConnecting] = useState(false)
   const [syncingAccountId, setSyncingAccountId] = useState<string | null>(null)
@@ -664,6 +668,50 @@ export function SettingsPage() {
                 } catch (e) { setNtfyTest(e instanceof Error ? e.message : 'Gagal kirim') } finally { setNtfyBusy(false) }
               }}>Send test</Button>
               {ntfyTest ? <span className="text-[12px] font-semibold text-slate-600">{ntfyTest}</span> : null}
+            </div>
+          </Card>
+          <Card className="col-span-full p-4">
+            <h2 className="text-[14px] font-bold">Trash auto-purge</h2>
+            <p className="mt-1 text-[12px] text-slate-500">Hapus permanen file di Sampah Drive yang sudah melewati batas hari (kuota langsung bebas). MATI secara default.</p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Input value={purgeDays} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPurgeDays(e.target.value)} placeholder="30 (hari, kosongkan = mati)" className="max-w-56" />
+              <Button size="sm" onClick={async () => {
+                setPurgeSaved('')
+                try {
+                  const r = await apiFetch<{ enabled: boolean; days: string }>('/settings/trash', { method: 'PUT', body: JSON.stringify({ days: purgeDays.trim() }) })
+                  setPurgeSaved(r.enabled ? ('Aktif: hapus trash > ' + r.days + ' hari') : 'Nonaktif.')
+                } catch (e) { setPurgeSaved(e instanceof Error ? e.message : 'Gagal simpan') }
+              }}>Save</Button>
+              {purgeSaved ? <span className="text-[12px] font-semibold text-slate-600">{purgeSaved}</span> : null}
+            </div>
+          </Card>
+          <Card className="col-span-full p-4">
+            <h2 className="text-[14px] font-bold">Users (admin)</h2>
+            <p className="mt-1 text-[12px] text-slate-500">Daftar semua akun. Nonaktifkan user = langsung logout & tidak bisa login.</p>
+            <div className="mt-3 grid gap-2">
+              {users.length === 0 ? <p className="text-[12px] text-slate-400">Hanya kamu (admin) di instance ini, atau bukan admin.</p> : null}
+              {users.map((u) => (
+                <div key={u.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 p-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-[13px] font-semibold">{u.name} <span className="font-normal text-slate-500">· {u.email}{u.role === 'admin' ? ' · ADMIN' : ''}{u.disabled ? ' · NONAKTIF' : ''}</span></p>
+                    <p className="text-[11px] text-slate-500">{u.connectedAccounts} akun Drive · {u.files} file</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant={u.disabled ? 'outline' : 'danger'} disabled={u.email === user?.email} onClick={async () => {
+                      try {
+                        await apiFetch('/admin/users/' + u.id, { method: 'PATCH', body: JSON.stringify({ disabled: !u.disabled }) })
+                        setUsers((prev) => prev.map((x) => (x.id === u.id ? { ...x, disabled: !u.disabled } : x)))
+                      } catch (e) { setMessage(e instanceof Error ? e.message : 'Gagal') }
+                    }}>{u.disabled ? 'Aktifkan' : 'Nonaktifkan'}</Button>
+                    <Button size="sm" variant="outline" onClick={async () => {
+                      try {
+                        await apiFetch('/admin/users/' + u.id, { method: 'PATCH', body: JSON.stringify({ role: u.role === 'admin' ? 'user' : 'admin' }) })
+                        setUsers((prev) => prev.map((x) => (x.id === u.id ? { ...x, role: x.role === 'admin' ? 'user' : 'admin' } : x)))
+                      } catch (e) { setMessage(e instanceof Error ? e.message : 'Gagal') }
+                    }}>{u.role === 'admin' ? 'Jadikan user' : 'Jadikan admin'}</Button>
+                  </div>
+                </div>
+              ))}
             </div>
           </Card>
           <Card className="p-4"><Globe className="h-5 w-5 text-blue-600" /><h2 className="mt-2 text-[14px] font-bold">Region</h2><p className="mt-1 text-[12px] text-slate-500">Workspace region: local gateway.</p></Card>

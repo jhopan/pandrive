@@ -639,3 +639,24 @@ The VPS installs and updates **from GitHub Releases** (`deploy/vps-update.sh`, i
   label, heavy-file warning (>= 200 MB), `X-Robots-Tag: noindex`; 404 revoked, 410 expired.
 - Old share rows keep their stored Drive URL — the page only falls back to `uc?export=download` when the
   stored URL is not a drive.google.com link.
+
+### 👥 Multi-user + trash auto-purge (v0.24.0)
+
+- `users.role` (admin|user) + `users.disabled` columns; bootstrap admin INSERT carries `role='admin'`.
+  EXISTING installs promote their owner manually: `UPDATE users SET role='admin' WHERE email='...';`
+- Login: disabled=1 → 403 `ACCOUNT_DISABLED` (checked BEFORE password compare); role is loaded into the
+  JWT (`authUser.Role`).
+- `requireAdmin(next)` gate; `GET/PATCH /api/admin/users[/{id}]` (list/disable/enable/role). Self-disable
+  or self-demote → 400 `SELF_LOCKOUT`; disabling revokes all sessions immediately.
+- Registration stays closed unless `app_settings.open_registration == '1'` (admin Settings switch).
+- Trash auto-purge: `trash_autopurge_days` in `app_settings` (empty = off, 1–365). `purgeOldTrash()` runs
+  in the background loop: `files.delete` on Drive (REAL deletion — quota freed) for rows
+  `status='deleted'` older than the window, removes the local row, notifies the owner. Tested live:
+  40-day-old trash purged, fresh trash kept, disabled = no-op.
+
+### ⚠️ Kernel write-loss lesson (this session)
+
+Three execute_code cells reported success but the file was later found at the committed state (git clean,
+changes gone). Recovery: re-applied ALL patches in one cell with an immediate on-disk verify
+(`chk = open(p).read()` in the SAME cell) and committed the WIP right away (`git commit` before tests).
+When a write matters, always verify content on disk in the same cell and commit early.

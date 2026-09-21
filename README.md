@@ -265,6 +265,17 @@ Thumbnails themselves stay tiny (~10 KB each, lazy-loaded, straight from Google'
   shows a Wi-Fi warning for files >= 200 MB, is `noindex`, returns 404 for revoked links and 410 Gone for
   expired ones.
 
+## Multi-user & trash auto-purge
+
+- **Multi-user**: registration can be opened by an admin (settings switch `open_registration`); every
+  user's files, accounts, shares and activity are isolated by `user_id`. Admins get a Users card in
+  Settings (list accounts, disable/enable — instant sign-out — and promote/demote). The bootstrap admin
+  account is promoted with `UPDATE users SET role='admin' WHERE email='...'` once.
+- **Trash auto-purge (opt-in)**: Settings → Trash auto-purge → days (empty = off, 1–365). A background
+  sweep (same 5-minute loop as expired shares) permanently deletes Drive trash older than the window via
+  the Drive API (real deletion, quota freed) and notifies the owner. Every action lands in the activity
+  log.
+
 ## Security
 
 - Every response carries `Content-Security-Policy` (`default-src 'self'`, hashed inline bootstrap script, `object-src 'none'`, `frame-ancestors 'none'`), computed from the embedded SPA shell so a rebuilt frontend cannot silently break it.
