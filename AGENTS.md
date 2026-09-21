@@ -602,3 +602,18 @@ The VPS installs and updates **from GitHub Releases** (`deploy/vps-update.sh`, i
 - Never probe an installed binary by executing it to read its version — a pre-`--version` build boots,
   runs migrations and can create a second database under a different CWD. Read
   `/opt/9drive/.installed-version` (written on success) or the service log instead.
+
+### 🖼️ Gallery / folder sizes / expiry / ntfy (v0.20.0)
+
+- Files sync stores `thumbnail_link` (Drive `thumbnailLink`); `GET /gallery` filters media and the
+  frontend loads thumbnails directly from `lh3.googleusercontent.com` — NOT proxied through the VPS.
+- Folder sizes: recursive CTE (`tree(id, root)`) aggregates `files.size_bytes` per root folder; returned
+  as `sizeBytes` by `/folders`.
+- Public links: `expires_at` + `auto_revoke` columns; `revokeExpiredShares(grace)` runs in the background
+  loop (same goroutine as the 5-minute sync) and removes the Drive `anyone` permission.
+- Notifications: `app_settings` kv table (`ntfy_server`, `ntfy_topic`); `a.notify(user, title, msg, tag,
+  priority)` is fire-and-forget (goroutine, 15 s timeout, never fails the caller).
+- **Route shadowing fix**: unprefixed API GETs (`/recent`, `/search`, `/starred`, `/gallery`, `/activity`,
+  `/uploads/queue`, `/storage/*`) collided with SPA page paths — hard refresh returned 401 JSON. They now
+  live ONLY under `/api/*`; the unprefixed path falls through to the SPA. Never register a plain
+  `GET /<page-path>` API route again.

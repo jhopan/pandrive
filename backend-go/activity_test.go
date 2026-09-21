@@ -43,7 +43,7 @@ func TestActivityLogRecordsAndFilters(t *testing.T) {
 
 	read := func(query string) (int, []map[string]any, []string) {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodGet, "/activity"+query, nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/activity"+query, nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
 		app.Router().ServeHTTP(w, req)

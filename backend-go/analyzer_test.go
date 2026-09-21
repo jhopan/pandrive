@@ -67,7 +67,7 @@ func TestStorageAnalyzerBucketsAndLargest(t *testing.T) {
 	seedFile(t, app, user.ID, "a3", "acc", "notes.txt", "text/plain", 50)
 	seedFile(t, app, user.ID, "a4", "acc", "backup.zip", "application/zip", 20000)
 
-	req := httptest.NewRequest(http.MethodGet, "/storage/analyzer", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/storage/analyzer", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	app.Router().ServeHTTP(w, req)

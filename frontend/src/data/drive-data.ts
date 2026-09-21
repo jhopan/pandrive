@@ -7,6 +7,7 @@ export type FolderItem = {
   parentId?: string | null
   providerFolderId?: string | null
   starred?: boolean
+  sizeBytes?: string
 }
 
 export type FileItem = {

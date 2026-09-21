@@ -24,7 +24,7 @@ import { useUpload } from '@/context/UploadContext'
 import { useDriveLayoutActions } from '@/layouts/DriveLayout'
 
 type BackendFile = { id: string; name: string; mimeType: string; sizeBytes: string; createdAt: string; folderId?: string | null; starred?: boolean; connectedAccount?: { email: string; provider: string }; folder?: { id: string; name: string } | null }
-type BackendFolder = { id: string; name: string; color: string; iconUrl?: string | null; parentId?: string | null; providerFolderId?: string | null; starred?: boolean; updatedAt: string }
+type BackendFolder = { id: string; name: string; color: string; iconUrl?: string | null; parentId?: string | null; providerFolderId?: string | null; starred?: boolean; updatedAt: string; sizeBytes?: string }
 type ConnectedAccount = { id: string; provider: string; email: string; displayName?: string | null; status: string }
 
 const sizeActiveClasses: Record<FolderSizeScale, string> = {
@@ -60,7 +60,7 @@ function mapFile(file: BackendFile): FileItem {
 }
 
 function mapFolder(folder: BackendFolder): FolderItem {
-  return { id: folder.id, name: folder.name, color: folder.color, iconUrl: folder.iconUrl, parentId: folder.parentId, providerFolderId: folder.providerFolderId, starred: folder.starred ?? false, updated: `Updated ${formatDate(folder.updatedAt)}` }
+  return { id: folder.id, name: folder.name, color: folder.color, iconUrl: folder.iconUrl, parentId: folder.parentId, providerFolderId: folder.providerFolderId, starred: folder.starred ?? false, updated: `Updated ${formatDate(folder.updatedAt)}`, sizeBytes: folder.sizeBytes }
 }
 
 
@@ -118,6 +118,7 @@ export function AllFilesPage() {
   const [message, setMessage] = useState('')
   const [gdrivePublicUrl, setGdrivePublicUrl] = useState('')
   const [makingPublic, setMakingPublic] = useState(false)
+  const [publicExpiryPreset, setPublicExpiryPreset] = useState('0')
   const [loading, setLoading] = useState(false)
   const [syncingDrive, setSyncingDrive] = useState(false)
   const [fileViewMode, setFileViewMode] = useState<FileViewMode>(getStoredFileViewMode)
@@ -901,6 +902,20 @@ export function AllFilesPage() {
                   <p className="rounded-xl bg-emerald-50 p-3 text-sm font-semibold text-emerald-700">Google Drive public link generated and copied to clipboard!</p>
                 </div>
               ) : (
+                <div className="grid gap-2">
+                <label className="grid gap-1 text-[12px] font-semibold">Link expiry
+                  <select
+                    value={publicExpiryPreset}
+                    onChange={(e) => setPublicExpiryPreset(e.target.value)}
+                    className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-[13px] font-semibold"
+                  >
+                    <option value="0">Never expires</option>
+                    <option value="1">1 hour</option>
+                    <option value="24">1 day</option>
+                    <option value="168">1 week</option>
+                    <option value="720">30 days</option>
+                  </select>
+                </label>
                 <Button
                   variant="outline"
                   disabled={makingPublic}
@@ -908,7 +923,10 @@ export function AllFilesPage() {
                     if (!activeFile?.id) return
                     setMakingPublic(true)
                     try {
-                      const res = await apiFetch<{ url: string }>('/files/' + activeFile.id + '/public-permission', { method: 'POST' })
+                      // Optional expiry: '' = never; presets map to absolute RFC3339 timestamps.
+                      const hours = Number(publicExpiryPreset)
+                      const qs = hours > 0 ? '?expiresAt=' + encodeURIComponent(new Date(Date.now() + hours * 3600_000).toISOString()) : ''
+                      const res = await apiFetch<{ url: string }>('/files/' + activeFile.id + '/public-permission' + qs, { method: 'POST' })
                       setGdrivePublicUrl(res.url)
                       await navigator.clipboard.writeText(res.url)
                     } catch (err: any) {
@@ -921,6 +939,7 @@ export function AllFilesPage() {
                 >
                   {makingPublic ? 'Making Public...' : 'Make Public & Copy GDrive Link'}
                 </Button>
+                </div>
               )}
             </div>
           )}

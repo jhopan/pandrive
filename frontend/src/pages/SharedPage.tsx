@@ -24,6 +24,8 @@ type Share = {
   sizeBytes: string
   mimeType: string
   accountEmail: string
+  expiresAt?: string | null
+  expired?: boolean
 }
 
 export function SharedPage() {
@@ -156,6 +158,11 @@ export function SharedPage() {
                     {formatBytes(share.sizeBytes)} · {share.accountEmail || 'unknown account'}
                     {share.createdAt ? <> · shared {formatDate(share.createdAt)}</> : null}
                   </p>
+                  {share.expiresAt ? (
+                    <p className={`mt-0.5 text-[11px] font-semibold ${share.expired ? 'text-red-600' : 'text-slate-500'}`}>
+                      {share.expired ? 'Expired ' : 'Expiring '}{formatDate(share.expiresAt)} — will be revoked automatically
+                    </p>
+                  ) : null}
                   <a href={share.url} target="_blank" rel="noreferrer" className="mt-1 block truncate text-[11px] text-blue-600 hover:underline" title={share.url}>{share.url}</a>
                 </div>
                 <div className="flex shrink-0 gap-2">

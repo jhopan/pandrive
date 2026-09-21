@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import { Bell, Cloud, CloudDownload, Database, Globe, HardDrive, Link2, RefreshCw, Trash2, Copy } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import { DummyModal } from '@/components/drive/DummyModal'
 import { OAuthConfigManager } from '@/components/drive/OAuthConfigManager'
 import { PageHeader } from '@/components/drive/PageHeader'
@@ -29,6 +30,10 @@ function availableLabel(account: ConnectedAccount) {
 export function SettingsPage() {
   const user = getStoredUser()
   const [accounts, setAccounts] = useState<ConnectedAccount[]>([])
+  const [ntfyServer, setNtfyServer] = useState('')
+  const [ntfyTopic, setNtfyTopic] = useState('')
+  const [ntfyBusy, setNtfyBusy] = useState(false)
+  const [ntfyTest, setNtfyTest] = useState('')
   const [message, setMessage] = useState('')
   const [connecting, setConnecting] = useState(false)
   const [syncingAccountId, setSyncingAccountId] = useState<string | null>(null)
@@ -141,6 +146,12 @@ export function SettingsPage() {
       setRestoringBackup(false)
     }
   }
+
+  useEffect(() => {
+    apiFetch<{ server: string; topic: string }>('/settings/notifications')
+      .then((d) => { setNtfyServer(d.server || ''); setNtfyTopic(d.topic || '') })
+      .catch(() => undefined)
+  }, [])
 
   useEffect(() => {
     if (!isPollingLog) return
@@ -626,7 +637,35 @@ export function SettingsPage() {
         </div>
         <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1 lg:gap-3">
           <Card className="p-4"><HardDrive className="h-5 w-5 text-blue-600" /><h2 className="mt-2 text-[14px] font-bold">Storage</h2><p className="mt-1 text-[12px] text-slate-500">Connected accounts: {accounts.length}</p></Card>
-          <Card className="p-4"><Bell className="h-5 w-5 text-blue-600" /><h2 className="mt-2 text-[14px] font-bold">Notifications</h2><p className="mt-1 text-[12px] text-slate-500">Email and app alerts are active.</p></Card>
+          <Card className="col-span-full p-4">
+            <div className="flex items-center gap-2"><Bell className="h-5 w-5 text-blue-600" /><h2 className="text-[14px] font-bold">Notifications (ntfy)</h2></div>
+            <p className="mt-1 text-[12px] text-slate-500">Kirim notifikasi upload/transfer/link/login gagal ke HP via ntfy. Default server https://ntfy.sh.</p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <label className="grid gap-1 text-[12px] font-semibold">Server
+                <Input value={ntfyServer} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNtfyServer(e.target.value)} placeholder="https://ntfy.sh" />
+              </label>
+              <label className="grid gap-1 text-[12px] font-semibold">Topic
+                <Input value={ntfyTopic} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNtfyTopic(e.target.value)} placeholder="pandrive-jhopan-xxxx" />
+              </label>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button size="sm" disabled={ntfyBusy} onClick={async () => {
+                setNtfyBusy(true); setNtfyTest('')
+                try {
+                  await apiFetch('/settings/notifications', { method: 'PUT', body: JSON.stringify({ server: ntfyServer, topic: ntfyTopic }) })
+                  setNtfyTest('Tersimpan.')
+                } catch (e) { setNtfyTest(e instanceof Error ? e.message : 'Gagal simpan') } finally { setNtfyBusy(false) }
+              }}>{ntfyBusy ? 'Menyimpan...' : 'Save'}</Button>
+              <Button size="sm" variant="outline" disabled={ntfyBusy} onClick={async () => {
+                setNtfyBusy(true); setNtfyTest('')
+                try {
+                  const r = await apiFetch<{ status: string; server: string; topic: string }>('/settings/notifications/test', { method: 'POST', body: JSON.stringify({ server: ntfyServer, topic: ntfyTopic }) })
+                  setNtfyTest('Test terkirim ke ' + r.server + '/' + r.topic + ' — cek HP kamu.')
+                } catch (e) { setNtfyTest(e instanceof Error ? e.message : 'Gagal kirim') } finally { setNtfyBusy(false) }
+              }}>Send test</Button>
+              {ntfyTest ? <span className="text-[12px] font-semibold text-slate-600">{ntfyTest}</span> : null}
+            </div>
+          </Card>
           <Card className="p-4"><Globe className="h-5 w-5 text-blue-600" /><h2 className="mt-2 text-[14px] font-bold">Region</h2><p className="mt-1 text-[12px] text-slate-500">Workspace region: local gateway.</p></Card>
         </div>
       </div>

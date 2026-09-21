@@ -305,6 +305,9 @@ CREATE TABLE IF NOT EXISTS permission_grants (
 );
 CREATE INDEX IF NOT EXISTS permission_grants_user_idx ON permission_grants(user_id, revoked_at);
 CREATE INDEX IF NOT EXISTS activity_log_action_idx ON activity_log(user_id, action);
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `)
 	if err != nil {
 		return err
@@ -314,6 +317,9 @@ CREATE INDEX IF NOT EXISTS activity_log_action_idx ON activity_log(user_id, acti
 	for _, stmt := range []string{
 		`ALTER TABLE files ADD COLUMN starred INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE folders ADD COLUMN starred INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE files ADD COLUMN thumbnail_link TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE share_links ADD COLUMN expires_at TEXT`,
+		`ALTER TABLE share_links ADD COLUMN auto_revoke INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := a.DB.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return err
@@ -524,20 +530,19 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("GET /auth/me", a.requireAuth(a.me))
 	mux.HandleFunc("PUT /auth/me", a.requireAuth(a.updateMe))
 	mux.HandleFunc("POST /auth/change-password", a.requireAuth(a.changePassword))
+	mux.HandleFunc("GET /settings/notifications", a.requireAuth(a.getNotificationSettings))
+	mux.HandleFunc("PUT /settings/notifications", a.requireAuth(a.putNotificationSettings))
+	mux.HandleFunc("POST /settings/notifications/test", a.requireAuth(a.testNotification))
 	mux.HandleFunc("GET /system/google-config", a.requireAuth(a.getGoogleConfig))
 	mux.HandleFunc("POST /system/google-config", a.requireAuth(a.saveGoogleConfig))
 	mux.HandleFunc("DELETE /system/google-config/{id}", a.requireAuth(a.deleteGoogleConfig))
 	mux.HandleFunc("PATCH /system/google-config/{id}", a.requireAuth(a.updateGoogleConfig))
 	mux.HandleFunc("POST /system/update", a.requireAuth(a.systemUpdate))
 	mux.HandleFunc("GET /system/version", a.requireAuth(a.updateInfoHandler))
-	mux.HandleFunc("GET /activity", a.requireAuth(a.listActivity))
-	mux.HandleFunc("GET /connected-accounts", a.requireAuth(a.listAccounts))
+		mux.HandleFunc("GET /connected-accounts", a.requireAuth(a.listAccounts))
 	mux.HandleFunc("GET /connected-accounts/google/connect-url", a.requireAuth(a.googleConnectURL))
 	mux.HandleFunc("GET /connected-accounts/google/callback", a.googleCallback)
-	mux.HandleFunc("GET /storage/summary", a.requireAuth(a.storageSummary))
-	mux.HandleFunc("GET /storage/breakdown", a.requireAuth(a.storageBreakdown))
-	mux.HandleFunc("GET /storage/routing-policy", a.requireAuth(a.getRoutingPolicy))
-	mux.HandleFunc("PATCH /storage/routing-policy", a.requireAuth(a.updateRoutingPolicy))
+				mux.HandleFunc("PATCH /storage/routing-policy", a.requireAuth(a.updateRoutingPolicy))
 	mux.HandleFunc("POST /connected-accounts/{id}/sync-quota", a.requireAuth(a.syncQuota))
 	mux.HandleFunc("GET /folders", a.requireAuth(a.listFolders))
 	mux.HandleFunc("POST /folders", a.requireAuth(a.createFolder))
@@ -548,10 +553,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /files/{id}/share", a.requireAuth(a.shareFileUrl))
 	mux.HandleFunc("POST /files/{id}/public-permission", a.requireAuth(a.publicPermission))
 	mux.HandleFunc("POST /files/{id}/public-link", a.requireAuth(a.publicPermission))
-	mux.HandleFunc("GET /recent", a.requireAuth(a.listRecent))
-	mux.HandleFunc("GET /search", a.requireAuth(a.searchFiles))
-	mux.HandleFunc("GET /starred", a.requireAuth(a.listStarred))
-	mux.HandleFunc("POST /files/{id}/star", a.requireAuth(a.starFile))
+					mux.HandleFunc("POST /files/{id}/star", a.requireAuth(a.starFile))
 	mux.HandleFunc("POST /folders/{id}/star", a.requireAuth(a.starFolder))
 	mux.HandleFunc("GET /permissions", a.requireAuth(a.listPermissions))
 	mux.HandleFunc("POST /invites", a.requireAuth(a.grantAccess))
@@ -559,15 +561,13 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("DELETE /invites/{id}", a.requireAuth(a.revokeInvite))
 	mux.HandleFunc("GET /shares", a.requireAuth(a.listShares))
 	mux.HandleFunc("DELETE /shares/{id}", a.requireAuth(a.revokeShare))
-	mux.HandleFunc("GET /uploads/queue", a.requireAuth(a.uploadQueue))
-	mux.HandleFunc("POST /uploads/queue/{id}/cancel", a.requireAuth(a.cancelUpload))
+		mux.HandleFunc("POST /uploads/queue/{id}/cancel", a.requireAuth(a.cancelUpload))
 	mux.HandleFunc("DELETE /uploads/queue/{id}", a.requireAuth(a.removeUploadRecord))
 	mux.HandleFunc("GET /system/health", a.requireAuth(a.systemHealth))
 	mux.HandleFunc("GET /system/rate-limits", a.requireAuth(a.rateLimits))
 	mux.HandleFunc("POST /files/batch-download", a.requireAuth(a.batchDownloadZip))
 	mux.HandleFunc("GET /files/duplicates", a.requireAuth(a.findDuplicates))
-	mux.HandleFunc("GET /storage/analyzer", a.requireAuth(a.storageAnalyzer))
-	mux.HandleFunc("POST /files/{id}/transfer", a.requireAuth(a.transferFile))
+		mux.HandleFunc("POST /files/{id}/transfer", a.requireAuth(a.transferFile))
 	mux.HandleFunc("POST /files/{id}/restore", a.requireAuth(a.restoreFile))
 	mux.HandleFunc("POST /files/{id}/purge", a.requireAuth(a.purgeFile))
 	mux.HandleFunc("POST /connected-accounts/{id}/empty-trash", a.requireAuth(a.emptyAccountTrash))
@@ -581,6 +581,21 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /uploads/resumable/init", a.requireAuth(a.initResumableUpload))
 	mux.HandleFunc("GET /uploads/resumable/status/{id}", a.requireAuth(a.resumableStatus))
 	mux.HandleFunc("PUT /uploads/resumable/chunk/{id}", a.requireAuth(a.resumableChunk))
+	// API routes duplicated under /api/* so page paths (/recent, /search, ...) stay SPA deep-links.
+	// The unprefixed forms shadowed the SPA and returned 401 JSON on hard refresh.
+	mux.HandleFunc("GET /api/recent", a.requireAuth(a.listRecent))
+	mux.HandleFunc("GET /api/search", a.requireAuth(a.searchFiles))
+	mux.HandleFunc("GET /api/starred", a.requireAuth(a.listStarred))
+	mux.HandleFunc("GET /api/gallery", a.requireAuth(a.listGallery))
+	mux.HandleFunc("GET /api/activity", a.requireAuth(a.listActivity))
+	mux.HandleFunc("GET /api/uploads/queue", a.requireAuth(a.uploadQueue))
+	mux.HandleFunc("GET /api/storage/summary", a.requireAuth(a.storageSummary))
+	mux.HandleFunc("GET /api/storage/breakdown", a.requireAuth(a.storageBreakdown))
+	mux.HandleFunc("GET /api/storage/analyzer", a.requireAuth(a.storageAnalyzer))
+	mux.HandleFunc("GET /api/storage/routing-policy", a.requireAuth(a.getRoutingPolicy))
+	mux.HandleFunc("POST /api/settings/notifications", a.requireAuth(a.putNotificationSettings))
+	mux.HandleFunc("GET /api/settings/notifications", a.requireAuth(a.getNotificationSettings))
+	mux.HandleFunc("POST /api/settings/notifications/test", a.requireAuth(a.testNotification))
 	mux.HandleFunc("/", serveSPA())
 	// Support same-origin deployments where the frontend calls /api/*: strip the prefix and forward.
 	apiStrip := http.StripPrefix("/api", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -641,6 +656,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		var ownerID string
 		if a.DB.QueryRow(`SELECT id FROM users WHERE email=?`, attempted).Scan(&ownerID) == nil {
 			a.logActivity(r, ownerID, "", "login_failed", "user", ownerID, attempted, 0, "Invalid credentials")
+			a.notify(ownerID, "Login gagal", "Percobaan login gagal untuk "+attempted+".", "warning", "high")
 		} else {
 			// No matching account: nothing to attribute the row to, so it is only visible in the
 			// server log. Without this a typo'd email leaves no trace at all.
@@ -1273,6 +1289,33 @@ func (a *App) createFolder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"folder": map[string]any{"id": id, "name": strings.TrimSpace(body.Name), "parentId": body.ParentID, "color": color}})
 }
 
+// folderSizeBytes aggregates the size of every active file under each folder, including all
+// descendant folders (recursive CTE over parent_id), in one query per request.
+func (a *App) folderSizeBytes(userID string) (map[string]int64, error) {
+	rows, err := a.DB.Query(`WITH RECURSIVE tree(id, root) AS (
+	  SELECT id, id FROM folders WHERE user_id=? AND deleted_at IS NULL
+	  UNION ALL
+	  SELECT f.id, t.root FROM folders f JOIN tree t ON f.parent_id=t.id WHERE f.deleted_at IS NULL
+	)
+	SELECT t.root, COALESCE(SUM(fi.size_bytes),0)
+	FROM tree t LEFT JOIN files fi ON fi.folder_id=t.id AND fi.status='active'
+	GROUP BY t.root`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	sizes := map[string]int64{}
+	for rows.Next() {
+		var id string
+		var total int64
+		if err := rows.Scan(&id, &total); err != nil {
+			return nil, err
+		}
+		sizes[id] = total
+	}
+	return sizes, rows.Err()
+}
+
 func (a *App) listFolders(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
 	parentID := r.URL.Query().Get("parentId")
@@ -1297,6 +1340,8 @@ func (a *App) listFolders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
+	// sizes cover direct + nested content; skip silently on failure (cosmetic field).
+	sizes, _ := a.folderSizeBytes(user.ID)
 	folders := make([]map[string]any, 0)
 	for rows.Next() {
 		var id, name, color, createdAt, updatedAt, providerFolderID, connectedAccountID string
@@ -1310,7 +1355,7 @@ func (a *App) listFolders(w http.ResponseWriter, r *http.Request) {
 		if parent.Valid {
 			parentID = parent.String
 		}
-		folders = append(folders, map[string]any{"id": id, "name": name, "parentId": parentID, "color": color, "createdAt": createdAt, "updatedAt": updatedAt, "starred": starred == 1, "providerFolderId": providerFolderID, "connectedAccountId": connectedAccountID})
+		folders = append(folders, map[string]any{"id": id, "name": name, "parentId": parentID, "color": color, "createdAt": createdAt, "updatedAt": updatedAt, "starred": starred == 1, "providerFolderId": providerFolderID, "connectedAccountId": connectedAccountID, "sizeBytes": fmt.Sprint(sizes[id])})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"folders": folders})
 }
@@ -1521,7 +1566,7 @@ func (a *App) listFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 		return
 	}
-	query := `SELECT f.id,f.name,f.mime_type,f.size_bytes,f.provider_file_id,f.folder_id,f.created_at,f.updated_at,c.id,c.email,c.provider,COALESCE(d.name,''),COALESCE(f.deleted_at,''),COALESCE(f.starred,0) FROM files f LEFT JOIN connected_accounts c ON c.id=f.connected_account_id LEFT JOIN folders d ON d.id=f.folder_id WHERE ` + where + ` ORDER BY f.created_at DESC`
+	query := `SELECT f.id,f.name,f.mime_type,f.size_bytes,f.provider_file_id,f.folder_id,f.created_at,f.updated_at,c.id,c.email,c.provider,COALESCE(d.name,''),COALESCE(f.deleted_at,''),COALESCE(f.starred,0),COALESCE(f.thumbnail_link,'') FROM files f LEFT JOIN connected_accounts c ON c.id=f.connected_account_id LEFT JOIN folders d ON d.id=f.folder_id WHERE ` + where + ` ORDER BY f.created_at DESC`
 	rows, err := a.DB.Query(query, args...)
 	if err != nil {
 		writeError(w, 500, "FILES_FAILED", "Unable to list files.")
@@ -1533,8 +1578,9 @@ func (a *App) listFiles(w http.ResponseWriter, r *http.Request) {
 		var id, name, mimeType, providerFileID, createdAt, updatedAt, accountID, email, provider, folderName, deletedAt string
 		var size int64
 		var starred int
+		var thumbnail string
 		var folderID sql.NullString
-		if err := rows.Scan(&id, &name, &mimeType, &size, &providerFileID, &folderID, &createdAt, &updatedAt, &accountID, &email, &provider, &folderName, &deletedAt, &starred); err != nil {
+		if err := rows.Scan(&id, &name, &mimeType, &size, &providerFileID, &folderID, &createdAt, &updatedAt, &accountID, &email, &provider, &folderName, &deletedAt, &starred, &thumbnail); err != nil {
 			writeError(w, 500, "FILES_FAILED", "Unable to read files: "+err.Error())
 			return
 		}
@@ -1542,9 +1588,45 @@ func (a *App) listFiles(w http.ResponseWriter, r *http.Request) {
 		if folderID.Valid {
 			folder = map[string]string{"id": folderID.String, "name": folderName}
 		}
-		files = append(files, map[string]any{"id": id, "name": name, "mimeType": mimeType, "sizeBytes": fmt.Sprint(size), "providerFileId": providerFileID, "folder": folder, "createdAt": createdAt, "updatedAt": updatedAt, "deletedAt": deletedAt, "starred": starred == 1, "connectedAccount": map[string]string{"id": accountID, "email": email, "provider": provider}})
+		files = append(files, map[string]any{"id": id, "name": name, "mimeType": mimeType, "sizeBytes": fmt.Sprint(size), "providerFileId": providerFileID, "folder": folder, "createdAt": createdAt, "updatedAt": updatedAt, "deletedAt": deletedAt, "starred": starred == 1, "thumbnailUrl": thumbnail, "connectedAccount": map[string]string{"id": accountID, "email": email, "provider": provider}})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"files": files})
+}
+
+// listGallery returns media files (images/videos) with their Drive thumbnails. The frontend loads
+// thumbnails straight from Google's CDN, so PanDrive's bandwidth stays near zero.
+func (a *App) listGallery(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	query := `SELECT f.id,f.name,f.mime_type,f.size_bytes,COALESCE(f.thumbnail_link,''),f.updated_at,c.id,c.email,COALESCE(f.folder_id,''),COALESCE(d.name,'')
+		FROM files f LEFT JOIN connected_accounts c ON c.id=f.connected_account_id LEFT JOIN folders d ON d.id=f.folder_id
+		WHERE f.user_id=? AND f.status='active' AND (f.mime_type LIKE 'image/%' OR f.mime_type LIKE 'video/%')`
+	args := []any{user.ID}
+	if accountID := r.URL.Query().Get("accountId"); accountID != "" {
+		query += ` AND f.connected_account_id=?`
+		args = append(args, accountID)
+	}
+	query += ` ORDER BY f.updated_at DESC LIMIT 500`
+	rows, err := a.DB.Query(query, args...)
+	if err != nil {
+		writeError(w, 500, "GALLERY_FAILED", "Unable to read gallery.")
+		return
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, name, mimeType, thumb, updatedAt, accountID, email, folderID, folderName string
+		var size int64
+		if err := rows.Scan(&id, &name, &mimeType, &size, &thumb, &updatedAt, &accountID, &email, &folderID, &folderName); err != nil {
+			writeError(w, 500, "GALLERY_FAILED", "Unable to read gallery.")
+			return
+		}
+		item := map[string]any{"id": id, "name": name, "mimeType": mimeType, "sizeBytes": fmt.Sprint(size), "thumbnailUrl": thumb, "updatedAt": updatedAt, "connectedAccount": map[string]string{"id": accountID, "email": email}}
+		if folderID != "" {
+			item["folder"] = map[string]string{"id": folderID, "name": folderName}
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
 }
 
 func (a *App) initResumableUpload(w http.ResponseWriter, r *http.Request) {
@@ -1761,6 +1843,7 @@ func (a *App) resumableChunk(w http.ResponseWriter, r *http.Request) {
 	_, _ = a.DB.Exec(`UPDATE storage_accounts SET available_bytes=MAX(0, available_bytes-?), used_bytes=used_bytes+? WHERE connected_account_id=?`, size, size, accountID)
 	_, _ = a.DB.Exec(`UPDATE upload_sessions SET status='completed',completed_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), id)
 	a.logActivity(r, user.ID, accountID, "file_upload", "file", uploaded.ID, uploaded.Name, size, "Uploaded to Drive")
+	a.notify(user.ID, "Upload selesai", uploaded.Name+" berhasil diupload.", "white_check_mark", "default")
 	writeJSON(w, 200, map[string]string{"status": "completed"})
 }
 
@@ -1904,13 +1987,14 @@ func (a *App) syncAccountFiles(ctx context.Context, userID, accountID string) (c
 		Modified string   `json:"modifiedTime"`
 		Trashed  bool     `json:"trashed"`
 		Parents  []string `json:"parents"`
+		Thumb    string   `json:"thumbnailLink"`
 	}
 	// Paginated listing: loop through all pages via nextPageToken (Google caps 1000/page).
 	var items []driveItem
 	seen := map[string]bool{}
 	pageToken := ""
 	for {
-		listURL := a.GoogleDriveAPIURL + `/files?pageSize=1000&orderBy=modifiedTime%20desc&fields=nextPageToken,files(id,name,mimeType,size,createdTime,modifiedTime,trashed,parents)`
+		listURL := a.GoogleDriveAPIURL + `/files?pageSize=1000&orderBy=modifiedTime%20desc&fields=nextPageToken,files(id,name,mimeType,size,createdTime,modifiedTime,trashed,parents,thumbnailLink)`
 		if pageToken != "" {
 			listURL += `&pageToken=` + url.QueryEscape(pageToken)
 		}
@@ -2004,12 +2088,12 @@ func (a *App) syncAccountFiles(ctx context.Context, userID, accountID string) (c
 		var exists int
 		_ = a.DB.QueryRow(`SELECT 1 FROM files WHERE user_id=? AND connected_account_id=? AND provider_file_id=?`, userID, accountID, item.ID).Scan(&exists)
 		if exists == 1 {
-			_, err = a.DB.Exec(`UPDATE files SET name=?,mime_type=?,size_bytes=?,folder_id=?,updated_at=? WHERE user_id=? AND connected_account_id=? AND provider_file_id=?`, item.Name, item.MIMEType, size, nullIfEmpty(folderLocal), item.Modified, userID, accountID, item.ID)
+			_, err = a.DB.Exec(`UPDATE files SET name=?,mime_type=?,size_bytes=?,folder_id=?,updated_at=?,thumbnail_link=? WHERE user_id=? AND connected_account_id=? AND provider_file_id=?`, item.Name, item.MIMEType, size, nullIfEmpty(folderLocal), item.Modified, item.Thumb, userID, accountID, item.ID)
 			if err == nil {
 				updated++
 			}
 		} else {
-			_, err = a.DB.Exec(`INSERT INTO files (id,user_id,connected_account_id,provider,provider_file_id,name,mime_type,size_bytes,folder_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, randomID(), userID, accountID, "google_drive", item.ID, item.Name, item.MIMEType, size, nullIfEmpty(folderLocal), item.Created, item.Modified)
+			_, err = a.DB.Exec(`INSERT INTO files (id,user_id,connected_account_id,provider,provider_file_id,name,mime_type,size_bytes,folder_id,created_at,updated_at,thumbnail_link) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, randomID(), userID, accountID, "google_drive", item.ID, item.Name, item.MIMEType, size, nullIfEmpty(folderLocal), item.Created, item.Modified, item.Thumb)
 			if err == nil {
 				created++
 			}
@@ -2845,6 +2929,12 @@ func main() {
 					}
 					cancel()
 				}
+				// Public links past their expires_at are revoked (Drive permission removed) once per loop.
+				if revoked, err := app.revokeExpiredShares(5 * time.Minute); err != nil {
+					log.Printf("expired share sweep failed: %v", err)
+				} else if revoked > 0 {
+					log.Printf("auto-revoked %d expired share link(s)", revoked)
+				}
 			}
 			time.Sleep(5 * time.Minute)
 		}
@@ -2951,12 +3041,21 @@ func (a *App) publicPermission(w http.ResponseWriter, r *http.Request) {
 
 	link := a.driveWebViewLink(ctx, accountID, providerFileID)
 	shareID := randomID()
-	if _, err := a.DB.Exec(`INSERT INTO share_links (id,user_id,file_id,connected_account_id,provider_file_id,permission_id,url) VALUES (?,?,?,?,?,?,?)`,
-		shareID, user.ID, fileID, accountID, providerFileID, perm.ID, link); err != nil {
+	// Optional expiry: the client sends an absolute RFC3339 timestamp; blank = never expires.
+	expiresAt := strings.TrimSpace(r.URL.Query().Get("expiresAt"))
+	if expiresAt != "" {
+		if _, err := time.Parse(time.RFC3339, expiresAt); err != nil {
+			writeError(w, 400, "BAD_REQUEST", "expiresAt must be an RFC3339 timestamp.")
+			return
+		}
+	}
+	if _, err := a.DB.Exec(`INSERT INTO share_links (id,user_id,file_id,connected_account_id,provider_file_id,permission_id,url,expires_at,auto_revoke) VALUES (?,?,?,?,?,?,?,?,1)`,
+		shareID, user.ID, fileID, accountID, providerFileID, perm.ID, link, nullIfEmpty(expiresAt)); err != nil {
 		writeError(w, 500, "SHARE_FAILED", "Link created in Drive but could not be saved locally.")
 		return
 	}
 	a.logActivity(r, user.ID, accountID, "file_share", "file", fileID, name, size, "Public link created")
+	a.notify(user.ID, "Link publik dibuat", "Public link untuk "+name+" sudah aktif.", "link", "default")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "url": link, "shareId": shareID})
 }
 
@@ -3207,7 +3306,8 @@ func (a *App) revokeInvite(w http.ResponseWriter, r *http.Request) {
 // listShares returns active public links.
 func (a *App) listShares(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
-	rows, err := a.DB.Query(`SELECT s.id,s.url,COALESCE(s.created_at,''),f.id,f.name,f.size_bytes,COALESCE(f.mime_type,''),COALESCE(c.email,'')
+	rows, err := a.DB.Query(`SELECT s.id,s.url,COALESCE(s.created_at,''),f.id,f.name,f.size_bytes,COALESCE(f.mime_type,''),COALESCE(c.email,''),s.expires_at,
+		CASE WHEN s.expires_at IS NOT NULL AND datetime(s.expires_at) <= datetime('now') THEN 1 ELSE 0 END
 		FROM share_links s
 		JOIN files f ON f.id=s.file_id
 		LEFT JOIN connected_accounts c ON c.id=s.connected_account_id
@@ -3222,11 +3322,17 @@ func (a *App) listShares(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var id, link, createdAt, fileID, name, mimeType, email string
 		var size int64
-		if err := rows.Scan(&id, &link, &createdAt, &fileID, &name, &size, &mimeType, &email); err != nil {
+		var expires sql.NullString
+		var expired int
+		if err := rows.Scan(&id, &link, &createdAt, &fileID, &name, &size, &mimeType, &email, &expires, &expired); err != nil {
 			writeError(w, 500, "SHARES_FAILED", "Unable to read shares.")
 			return
 		}
-		shares = append(shares, map[string]any{"id": id, "url": link, "createdAt": createdAt, "fileId": fileID, "name": name, "sizeBytes": fmt.Sprint(size), "mimeType": mimeType, "accountEmail": email})
+		var expiresOut any
+		if expires.Valid {
+			expiresOut = expires.String
+		}
+		shares = append(shares, map[string]any{"id": id, "url": link, "createdAt": createdAt, "fileId": fileID, "name": name, "sizeBytes": fmt.Sprint(size), "mimeType": mimeType, "accountEmail": email, "expiresAt": expiresOut, "expired": expired == 1})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"shares": shares, "total": len(shares)})
 }
@@ -3264,6 +3370,191 @@ func (a *App) revokeShare(w http.ResponseWriter, r *http.Request) {
 	a.logActivity(r, user.ID, accountID, "file_unshare", "file", fileID, name, 0, "Public link revoked")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
+
+// revokeExpiredShares marks expired public links revoked and removes their "anyone" permission in
+// Drive. grace limits how fresh an expiry may be before we touch it (avoids racing the creator).
+func (a *App) revokeExpiredShares(grace time.Duration) (int, error) {
+	cutoff := time.Now().UTC().Add(-grace).Format(time.RFC3339)
+	rows, err := a.DB.Query(`SELECT s.id, s.connected_account_id, s.provider_file_id, COALESCE(f.name,''), s.user_id
+		FROM share_links s LEFT JOIN files f ON f.id=s.file_id
+		WHERE s.revoked_at IS NULL AND s.expires_at IS NOT NULL AND s.expires_at != '' AND datetime(s.expires_at) <= datetime(?)`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	type expired struct {
+		id, accountID, providerFileID, name, userID string
+	}
+	var targets []expired
+	for rows.Next() {
+		var t expired
+		if err := rows.Scan(&t.id, &t.accountID, &t.providerFileID, &t.name, &t.userID); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		targets = append(targets, t)
+	}
+	rows.Close()
+	revoked := 0
+	for _, t := range targets {
+		var permissionID string
+		_ = a.DB.QueryRow(`SELECT permission_id FROM share_links WHERE id=?`, t.id).Scan(&permissionID)
+		if permissionID != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			token, err := a.getGoogleToken(ctx, t.accountID, false)
+			if err == nil {
+				req, err := http.NewRequestWithContext(ctx, http.MethodDelete, a.GoogleDriveAPIURL+"/files/"+url.PathEscape(t.providerFileID)+"/permissions/"+url.PathEscape(permissionID), nil)
+				if err == nil {
+					req.Header.Set("Authorization", "Bearer "+token)
+					if resp, err := a.HTTPClient.Do(req); err == nil {
+						resp.Body.Close()
+					}
+				}
+			}
+			cancel()
+		}
+		res, err := a.DB.Exec(`UPDATE share_links SET revoked_at=CURRENT_TIMESTAMP WHERE id=? AND revoked_at IS NULL`, t.id)
+		if err != nil {
+			return revoked, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			revoked++
+			a.notify(t.userID, "Link kedaluwarsa", fmt.Sprintf("Public link untuk %s sudah kadaluarsa dan dicabut.", t.name), "share_expired", "low")
+		}
+	}
+	return revoked, nil
+}
+
+// ---- notifications (ntfy) ----
+
+// settingValue reads a key from app_settings.
+func (a *App) settingValue(key string) string {
+	var value string
+	_ = a.DB.QueryRow(`SELECT value FROM app_settings WHERE key=?`, key).Scan(&value)
+	return value
+}
+
+// setSetting upserts a key in app_settings.
+func (a *App) setSetting(key, value string) error {
+	_, err := a.DB.Exec(`INSERT INTO app_settings (key,value,updated_at) VALUES (?,?,CURRENT_TIMESTAMP)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP`, key, value)
+	return err
+}
+
+// notify posts an event to the user's configured ntfy topic. Fire-and-forget: notification
+// failures must never fail the underlying operation. topicOverride lets the test button try a
+// value before it is saved.
+func (a *App) notify(userID, title, message, tag, priority string) {
+	topic := a.settingValue("ntfy_topic")
+	if topic == "" {
+		return
+	}
+	server := a.settingValue("ntfy_server")
+	if server == "" {
+		server = "https://ntfy.sh"
+	}
+	go func(server, topic string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, server+"/"+topic, strings.NewReader(message))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Title", title)
+		req.Header.Set("Tags", tag)
+		req.Header.Set("Priority", priority)
+		client := &http.Client{Timeout: 15 * time.Second}
+		if resp, err := client.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}(server, topic)
+}
+
+// getNotificationSettings returns the user's ntfy config (never the secret).
+func (a *App) getNotificationSettings(w http.ResponseWriter, r *http.Request) {
+	_ = r.Context().Value(userKey).(authUser) // auth gate only; settings are app-wide by design
+	writeJSON(w, http.StatusOK, map[string]any{"server": a.settingValue("ntfy_server"), "topic": a.settingValue("ntfy_topic"), "enabled": a.settingValue("ntfy_topic") != ""})
+}
+
+// putNotificationSettings stores the ntfy config.
+func (a *App) putNotificationSettings(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	var body struct {
+		Server string `json:"server"`
+		Topic  string `json:"topic"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, 400, "BAD_REQUEST", "Invalid request body.")
+		return
+	}
+	body.Server = strings.TrimRight(strings.TrimSpace(body.Server), "/")
+	body.Topic = strings.TrimSpace(body.Topic)
+	if body.Topic == "" {
+		writeError(w, 400, "TOPIC_REQUIRED", "Topic is required.")
+		return
+	}
+	if body.Server != "" && !strings.HasPrefix(body.Server, "http") {
+		writeError(w, 400, "BAD_SERVER", "Server must start with http(s)://")
+		return
+	}
+	if body.Server == "" {
+		body.Server = "https://ntfy.sh"
+	}
+	if err := a.setSetting("ntfy_server", body.Server); err != nil {
+		writeError(w, 500, "SETTINGS_FAILED", "Unable to save settings.")
+		return
+	}
+	if err := a.setSetting("ntfy_topic", body.Topic); err != nil {
+		writeError(w, 500, "SETTINGS_FAILED", "Unable to save settings.")
+		return
+	}
+	a.logActivity(r, user.ID, "", "settings_update", "user", user.ID, user.Email, 0, "Notification settings saved ("+body.Server+"/"+body.Topic+")")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "server": body.Server, "topic": body.Topic})
+}
+
+// testNotification fires a real notification with the request values (or the saved ones).
+func (a *App) testNotification(w http.ResponseWriter, r *http.Request) {
+	_ = r.Context().Value(userKey).(authUser) // auth gate only
+	var body struct {
+		Server string `json:"server"`
+		Topic  string `json:"topic"`
+	}
+	_ = decodeJSON(r, &body)
+	topic := body.Topic
+	server := strings.TrimRight(strings.TrimSpace(body.Server), "/")
+	if topic == "" {
+		topic = a.settingValue("ntfy_topic")
+	}
+	if server == "" {
+		server = a.settingValue("ntfy_server")
+	}
+	if server == "" {
+		server = "https://ntfy.sh"
+	}
+	if topic == "" {
+		writeError(w, 400, "TOPIC_REQUIRED", "Save a topic first or pass one in the request.")
+		return
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, server+"/"+topic, strings.NewReader("Notifikasi PanDrive aktif. Kalau kamu melihat ini, pengaturan sudah benar."))
+	if err != nil {
+		writeError(w, 500, "NOTIFY_FAILED", "Unable to build request.")
+		return
+	}
+	req.Header.Set("Title", "PanDrive test")
+	req.Header.Set("Tags", "white_check_mark")
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		writeError(w, 502, "NOTIFY_FAILED", "ntfy server unreachable: "+err.Error())
+		return
+	}
+	resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		writeError(w, 502, "NOTIFY_FAILED", fmt.Sprintf("ntfy rejected the message (%d).", resp.StatusCode))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "sent", "server": server, "topic": topic})
+}
+
 
 // uploadQueue lists resumable-upload sessions so stuck or failed uploads can be seen.
 func (a *App) uploadQueue(w http.ResponseWriter, r *http.Request) {
@@ -3861,6 +4152,7 @@ func (a *App) transferFile(w http.ResponseWriter, r *http.Request) {
 		mode = "Moved"
 	}
 	a.logActivity(r, user.ID, sourceAccountID, "file_transfer", "file", fileID, name, size, fmt.Sprintf("%s to %s (server-side)", mode, targetEmail))
+	a.notify(user.ID, "Transfer selesai", mode+" "+name+" → "+targetEmail, "truck", "default")
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "newFileId": newFileID, "moved": sourceDeleted, "sourceInTrash": sourceDeleted})
 }
 

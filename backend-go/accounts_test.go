@@ -52,7 +52,7 @@ func TestStorageSummaryTotalsAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/storage/summary", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/storage/summary", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	app.Router().ServeHTTP(w, req)

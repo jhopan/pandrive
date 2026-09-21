@@ -129,7 +129,7 @@ func TestUploadQueueLifecycle(t *testing.T) {
 		return w, out
 	}
 
-	w, out := rebuild(http.MethodGet, "/uploads/queue")
+	w, out := rebuild(http.MethodGet, "/api/uploads/queue")
 	if w.Code != http.StatusOK {
 		t.Fatalf("queue = %d: %s", w.Code, w.Body.String())
 	}
@@ -141,7 +141,7 @@ func TestUploadQueueLifecycle(t *testing.T) {
 		t.Fatalf("counts = %v", counts)
 	}
 
-	if _, out := rebuild(http.MethodGet, "/uploads/queue?status=uploading"); out["total"].(float64) != 1 {
+	if _, out := rebuild(http.MethodGet, "/api/uploads/queue?status=uploading"); out["total"].(float64) != 1 {
 		t.Fatalf("filtered total = %v", out["total"])
 	}
 
@@ -164,7 +164,7 @@ func TestUploadQueueLifecycle(t *testing.T) {
 	if w, _ := rebuild(http.MethodDelete, "/uploads/queue/u1"); w.Code != http.StatusOK {
 		t.Fatalf("remove cancelled = %d: %s", w.Code, w.Body.String())
 	}
-	if _, out := rebuild(http.MethodGet, "/uploads/queue"); out["total"].(float64) != 1 {
+	if _, out := rebuild(http.MethodGet, "/api/uploads/queue"); out["total"].(float64) != 1 {
 		t.Fatalf("queue after remove = %v", out["total"])
 	}
 }

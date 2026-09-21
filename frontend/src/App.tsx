@@ -22,6 +22,7 @@ const ActivityPage = lazy(() => import('@/pages/ActivityPage').then(({ ActivityP
 const DuplicatesPage = lazy(() => import('@/pages/DuplicatesPage').then(({ DuplicatesPage }) => ({ default: DuplicatesPage })))
 const StoragePage = lazy(() => import('@/pages/StoragePage').then(({ StoragePage }) => ({ default: StoragePage })))
 const TrashPage = lazy(() => import('@/pages/TrashPage').then(({ TrashPage }) => ({ default: TrashPage })))
+const GalleryPage = lazy(() => import('@/pages/GalleryPage').then(({ GalleryPage }) => ({ default: GalleryPage })))
 
 function PageLoader() {
   return <main className="grid min-h-screen place-items-center text-sm font-semibold text-slate-500">Loading PanDrive…</main>
@@ -47,6 +48,7 @@ function App() {
               <Route path="activity" element={<ActivityPage />} />
               <Route path="shared" element={<SharedPage />} />
               <Route path="starred" element={<StarredPage />} />
+              <Route path="gallery" element={<GalleryPage />} />
               <Route path="recent" element={<RecentPage />} />
               <Route path="search" element={<SearchPage />} />
               <Route path="uploads" element={<UploadsPage />} />

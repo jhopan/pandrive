@@ -35,7 +35,7 @@ func TestSearchFiltersSortingAndFacets(t *testing.T) {
 
 	read := func(query string) (int, string, []map[string]any, map[string]any, int) {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodGet, "/search"+query, nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/search"+query, nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
 		app.Router().ServeHTTP(w, req)
@@ -133,7 +133,7 @@ func TestSearchFiltersSortingAndFacets(t *testing.T) {
 	}
 
 	// Bad numeric input is a 400, not a silent ignore.
-	req := httptest.NewRequest(http.MethodGet, "/search?minSize=abc", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/search?minSize=abc", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	app.Router().ServeHTTP(w, req)

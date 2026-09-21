@@ -28,7 +28,7 @@ func TestStarredFilesAndFolders(t *testing.T) {
 	}
 
 	// Nothing starred initially.
-	if w := call(http.MethodGet, "/starred", ""); w.Code != http.StatusOK {
+	if w := call(http.MethodGet, "/api/starred", ""); w.Code != http.StatusOK {
 		t.Fatalf("starred = %d: %s", w.Code, w.Body.String())
 	}
 	var page struct {
@@ -40,7 +40,7 @@ func TestStarredFilesAndFolders(t *testing.T) {
 		} `json:"folders"`
 		Total int `json:"total"`
 	}
-	_ = json.Unmarshal(call(http.MethodGet, "/starred", "").Body.Bytes(), &page)
+	_ = json.Unmarshal(call(http.MethodGet, "/api/starred", "").Body.Bytes(), &page)
 	if page.Total != 0 {
 		t.Fatalf("initial total = %d, want 0", page.Total)
 	}
@@ -52,7 +52,7 @@ func TestStarredFilesAndFolders(t *testing.T) {
 		t.Fatalf("star folder = %d: %s", w.Code, w.Body.String())
 	}
 
-	_ = json.Unmarshal(call(http.MethodGet, "/starred", "").Body.Bytes(), &page)
+	_ = json.Unmarshal(call(http.MethodGet, "/api/starred", "").Body.Bytes(), &page)
 	if page.Total != 2 || len(page.Files) != 1 || page.Files[0].Name != "spec.pdf" || page.Folders[0].Name != "Projects" {
 		t.Fatalf("starred payload = %+v", page)
 	}
@@ -86,7 +86,7 @@ func TestStarredFilesAndFolders(t *testing.T) {
 	if w := call(http.MethodPost, "/files/file1/star", `{"starred":false}`); w.Code != http.StatusOK {
 		t.Fatalf("unstar = %d", w.Code)
 	}
-	_ = json.Unmarshal(call(http.MethodGet, "/starred", "").Body.Bytes(), &page)
+	_ = json.Unmarshal(call(http.MethodGet, "/api/starred", "").Body.Bytes(), &page)
 	if page.Total != 1 || len(page.Files) != 0 {
 		t.Fatalf("after unstar = %+v", page)
 	}

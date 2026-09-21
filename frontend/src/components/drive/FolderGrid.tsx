@@ -4,6 +4,7 @@ import { Card } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 import type { FolderItem } from '@/data/drive-data'
 import { FolderVisual } from '@/components/drive/FolderVisual'
+import { formatBytes } from '@/lib/api'
 
 export type FolderSizeScale = 'xs' | 'sm' | 'md' | 'lg'
 
@@ -96,6 +97,7 @@ export function FolderGrid({
           <FolderVisual folder={folder} className={cn('transition group-hover:scale-110', cfg.icon)} />
           <h2 className={cn('line-clamp-2 text-center font-extrabold leading-tight', cfg.title)}>{folder.name}</h2>
           <p className={cn('line-clamp-1 text-center text-slate-500', cfg.sub)}>{folder.updated}</p>
+          {folder.sizeBytes ? <p className={cn('line-clamp-1 text-center text-slate-400', cfg.sub)}>{formatBytes(Number(folder.sizeBytes))}</p> : null}
         </Card>
       ))}
     </div>

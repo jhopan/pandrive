@@ -222,6 +222,19 @@ sudo systemctl enable --now pandrive-update.timer   # runs daily, updates only w
 
 Leave it disabled if you want to choose exactly when the service restarts.
 
+## Gallery, folder sizes, expiring links, notifications
+
+- **Gallery** (`/gallery`): image/video grid. Thumbnails are Drive `thumbnailLink` URLs loaded by the
+  browser straight from Google's CDN — PanDrive's bandwidth stays near zero and no Drive API quota is
+  used for thumbnail views. Broken thumbnails fall back to icon tiles.
+- **Folder sizes**: `/folders` returns `sizeBytes` per folder, a recursive aggregate (folder + all
+  descendants), shown on folder cards.
+- **Expiring public links**: create with `?expiresAt=<RFC3339>` (presets in the UI: 1h/1d/1w/30d/never).
+  A background sweep revokes expired links in Drive and locally; `/shares` reports `expiresAt`/`expired`.
+- **Notifications (ntfy)**: Settings → Notifications (ntfy) → server + topic + Send test. Events:
+  upload finished, transfer done, public link created, login failed, link expired. Default server
+  `https://ntfy.sh`; point it at a self-hosted instance any time.
+
 ## Security
 
 - Every response carries `Content-Security-Policy` (`default-src 'self'`, hashed inline bootstrap script, `object-src 'none'`, `frame-ancestors 'none'`), computed from the embedded SPA shell so a rebuilt frontend cannot silently break it.

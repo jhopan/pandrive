@@ -27,6 +27,7 @@ import {
   HeartPulse,
   Star,
   Clock,
+  Image,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { BrandLogo } from '@/components/drive/BrandLogo'
@@ -47,6 +48,7 @@ const menuGroups: { label: string; items: { label: string; icon: React.ElementTy
       { label: 'Starred', icon: Star, href: '/starred' },
       { label: 'Recent', icon: Clock, href: '/recent' },
       { label: 'Search', icon: Search, href: '/search' },
+      { label: 'Gallery', icon: Image, href: '/gallery' },
       { label: 'Uploads', icon: UploadCloud, href: '/uploads' },
     ],
   },

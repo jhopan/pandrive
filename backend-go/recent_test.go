@@ -39,7 +39,7 @@ func TestRecentFilesOrderingAndFilters(t *testing.T) {
 
 	read := func(query string) (int, []map[string]any, int, int, int) {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodGet, "/recent"+query, nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/recent"+query, nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
 		app.Router().ServeHTTP(w, req)
