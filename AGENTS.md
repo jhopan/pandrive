@@ -660,3 +660,13 @@ Three execute_code cells reported success but the file was later found at the co
 changes gone). Recovery: re-applied ALL patches in one cell with an immediate on-disk verify
 (`chk = open(p).read()` in the SAME cell) and committed the WIP right away (`git commit` before tests).
 When a write matters, always verify content on disk in the same cell and commit early.
+
+### 📦 One-line installer (deploy/install.sh)
+
+`curl -fsSL https://raw.githubusercontent.com/jhopan/pandrive/master/deploy/install.sh | bash` installs
+the LATEST release; `| bash -s -- v0.24.1` pins a version (with or without the leading v). Verified
+against real releases: latest mode + version mode both OK in a sandbox, checksum gate refuses releases
+without SHA256SUMS, fresh `.env` seeded with random secrets only when absent, systemd unit created and
+health-checked when run as root, `.prev` kept on upgrade. Env overrides: `GITHUB_REPO`, `INSTALL_DIR`,
+`SERVICE`. Note: GitHub objects redirect can 504 transiently — the retry loop in the test harness
+covered it; keep `--retry 3` on every curl.

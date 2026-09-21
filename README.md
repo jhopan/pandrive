@@ -282,6 +282,25 @@ v0.24.1 is a tested stability release: 52 backend tests pass, all API endpoints 
 production over the tunnel), every SPA page (incl. hard refresh deep-links), i18n switch, share pages,
 multi-user gates and trash auto-purge were exercised end to end.
 
+## One-line install
+
+Linux server (x86_64 / arm64), straight from GitHub Releases — checksum-verified:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jhopan/pandrive/master/deploy/install.sh | bash
+```
+
+Install a specific version instead of the latest:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jhopan/pandrive/master/deploy/install.sh | bash -s -- v0.24.1
+```
+
+The script downloads `pandrive-linux-<arch>`, verifies it against the release's `SHA256SUMS`, installs to
+`/opt/9drive`, seeds a fresh `.env` with random secrets (never overwrites one), and — when run as root —
+creates and starts the `9drive` systemd service with automatic rollback kept as `.prev`. Re-running it
+upgrades in place without touching the database.
+
 ## Security
 
 - Every response carries `Content-Security-Policy` (`default-src 'self'`, hashed inline bootstrap script, `object-src 'none'`, `frame-ancestors 'none'`), computed from the embedded SPA shell so a rebuilt frontend cannot silently break it.
