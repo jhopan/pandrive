@@ -64,6 +64,24 @@ git commit -m "fix: bug Y"
 
 **Rule:** Every `git commit` MUST be immediately followed by `git push origin main`.
 
+### 🏷️ Release & Tag Policy (USER APPROVAL REQUIRED)
+
+Pushing `main` alone is ALWAYS allowed and expected (backup policy above). But **releases are gated**:
+
+**A release (git tag `v*`) is created ONLY when the user explicitly asks for it.**
+
+- ✅ ALLOWED without asking: `git add`, `git commit`, `git push origin main`.
+- ❌ NEVER do without an explicit user instruction in the current conversation:
+  - `git tag vX.Y.Z` / `git push origin vX.Y.Z` (triggers the Release + Docker workflows)
+  - building release binaries for deploy, scp/installing to the VPS
+  - running `pandrive-update` on the VPS
+- If the work is finished but no release was requested: stop after pushing `main` and tell the user
+  "siap di-release — minta tag kalau mau" instead of tagging.
+- Versioning when the user DOES ask: minor bump for a feature, patch for fixes/docs (previous tag + 1).
+
+**Why:** every tag triggers GitHub Actions builds + a public release; unprompted releases create noise
+and publish unfinished work. The user decides when a version ships.
+
 ## Project Overview
 
 **PanDrive** — Multi-account cloud drive gateway with Google Drive integration.
