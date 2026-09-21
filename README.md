@@ -245,6 +245,16 @@ The UI ships bilingual (English default, Indonesian included):
   a missing translation falls back to the key itself, so adding a page costs nothing in EN mode.
 - `PageHeader` translates titles/descriptions centrally, so all pages switch at once.
 
+## Gallery size badges
+
+Every gallery card carries a coloured size badge so you can gauge mobile-data cost before opening:
+
+- green `< 5 MB` — safe to open anywhere
+- amber `5 MB – 200 MB` — watch your quota
+- red `>= 200 MB` — open over Wi-Fi
+
+Thumbnails themselves stay tiny (~10 KB each, lazy-loaded, straight from Google's CDN).
+
 ## Security
 
 - Every response carries `Content-Security-Policy` (`default-src 'self'`, hashed inline bootstrap script, `object-src 'none'`, `frame-ancestors 'none'`), computed from the embedded SPA shell so a rebuilt frontend cannot silently break it.

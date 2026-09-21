@@ -86,9 +86,25 @@ export function GalleryPage() {
                   className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
                 />
               )}
-              {isVideo(item.mimeType) ? (
-                <span className="absolute left-2 top-2 rounded-md bg-slate-900/80 px-1.5 py-0.5 text-[10px] font-bold text-white">VIDEO</span>
-              ) : null}
+              <div className="absolute left-2 top-2 flex gap-1">
+                {isVideo(item.mimeType) ? (
+                  <span className="rounded-md bg-slate-900/80 px-1.5 py-0.5 text-[10px] font-bold text-white">VIDEO</span>
+                ) : null}
+                {(() => {
+                  const bytes = Number(item.sizeBytes)
+                  const mb = bytes / (1024 * 1024)
+                  const heavy = mb >= 200
+                  const medium = mb >= 5 && mb < 200
+                  return (
+                    <span
+                      title={heavy ? 'File besar — nonton/unduh lewat Wi-Fi' : medium ? 'Sedang — hati-hati pakai kuota' : 'Kecil — aman dibuka kapan pun'}
+                      className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold text-white ${heavy ? 'bg-red-600/90' : medium ? 'bg-amber-500/90' : 'bg-emerald-600/90'}`}
+                    >
+                      {formatBytes(bytes)}
+                    </span>
+                  )
+                })()}
+              </div>
             </div>
             <div className="space-y-0.5 p-3">
               <p className="truncate text-[13px] font-bold" title={item.name}>{item.name}</p>
