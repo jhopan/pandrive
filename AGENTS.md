@@ -627,3 +627,15 @@ The VPS installs and updates **from GitHub Releases** (`deploy/vps-update.sh`, i
   page translates without per-page edits.
 - Sidebar labels are wrapped in `t()` in `DriveLayout` (groups + items + Accounts heading + Log Out).
 - When adding user-visible strings, put the English source as-is; add an `ID` entry only for Indonesian.
+
+### 🔗 Preview redirect + branded /s/ share page (v0.23.0)
+
+- `viewFileUrl` now returns the real `webViewLink` (via `driveWebViewLink`); the "empty URL" stub is gone.
+  Any media preview MUST go browser -> Google; never stream video through the VPS.
+- `publicPermission` stores the **branded page URL** (`<scheme>://<host>/s/<shareID>`, host from
+  `X-Forwarded-Host`) instead of the raw Drive link; response `url` is the page URL too.
+- `sharePage` (`GET /s/{id}`, public): scans `COALESCE(s.expires_at,'')` (raw NULL breaks the string scan —
+  this exact bug cost a debugging round), serves ~1.4 KB of inline HTML with `/logo.png`, file name, size
+  label, heavy-file warning (>= 200 MB), `X-Robots-Tag: noindex`; 404 revoked, 410 expired.
+- Old share rows keep their stored Drive URL — the page only falls back to `uc?export=download` when the
+  stored URL is not a drive.google.com link.

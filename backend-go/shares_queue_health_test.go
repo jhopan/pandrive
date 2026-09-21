@@ -68,7 +68,8 @@ func TestPublicLinkCreateListRevoke(t *testing.T) {
 		ShareID string `json:"shareId"`
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &createdResp)
-	if createdResp.URL != "https://drive.google.com/file/d/pid/view" || createdResp.ShareID == "" {
+	// The URL is now PanDrive's branded page (/s/<id>); the page links to Google.
+	if createdResp.URL != "http://example.com/s/"+createdResp.ShareID || createdResp.ShareID == "" {
 		t.Fatalf("share response = %+v", createdResp)
 	}
 

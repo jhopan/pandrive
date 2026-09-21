@@ -596,6 +596,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /api/settings/notifications", a.requireAuth(a.putNotificationSettings))
 	mux.HandleFunc("GET /api/settings/notifications", a.requireAuth(a.getNotificationSettings))
 	mux.HandleFunc("POST /api/settings/notifications/test", a.requireAuth(a.testNotification))
+	mux.HandleFunc("GET /s/{id}", a.sharePage)
 	mux.HandleFunc("/", serveSPA())
 	// Support same-origin deployments where the frontend calls /api/*: strip the prefix and forward.
 	apiStrip := http.StripPrefix("/api", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2950,9 +2951,29 @@ func main() {
 	log.Fatal(http.ListenAndServe(bind+":"+config.AppPort, app.Router()))
 }
 
+// viewFileUrl hands the browser Google's own viewer URL (webViewLink). Playback/download then flows
+// browser -> Google directly: no VPS bandwidth, no quota cost beyond what the user chooses to open.
 func (a *App) viewFileUrl(w http.ResponseWriter, r *http.Request) {
-	// For now, return empty URL so frontend falls back to stream preview
-	writeJSON(w, http.StatusOK, map[string]string{"url": ""})
+	user := r.Context().Value(userKey).(authUser)
+	fileID := r.PathValue("id")
+	var providerFileID, accountID string
+	err := a.DB.QueryRow(`SELECT f.provider_file_id, f.connected_account_id FROM files f WHERE f.id=? AND f.user_id=? AND f.status='active'`, fileID, user.ID).Scan(&providerFileID, &accountID)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "FILE_NOT_FOUND", "File not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "VIEW_FAILED", "Unable to load file.")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	link := a.driveWebViewLink(ctx, accountID, providerFileID)
+	if link == "" {
+		writeError(w, 502, "VIEW_FAILED", "Unable to read the Drive viewer link.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": link})
 }
 
 func (a *App) shareFileUrl(w http.ResponseWriter, r *http.Request) {
@@ -3039,7 +3060,6 @@ func (a *App) publicPermission(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.Unmarshal(body, &perm)
 
-	link := a.driveWebViewLink(ctx, accountID, providerFileID)
 	shareID := randomID()
 	// Optional expiry: the client sends an absolute RFC3339 timestamp; blank = never expires.
 	expiresAt := strings.TrimSpace(r.URL.Query().Get("expiresAt"))
@@ -3049,14 +3069,25 @@ func (a *App) publicPermission(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The stored URL is PanDrive's branded page (/s/<id>); the page itself links to Google's viewer,
+	// so downloads flow browser -> Google and the VPS only ever serves ~2 KB of HTML.
+	scheme := "http"
+	host := r.Host
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	if fwd := r.Header.Get("X-Forwarded-Host"); fwd != "" {
+		host = strings.TrimSpace(strings.Split(fwd, ",")[0])
+	}
+	pageURL := scheme + "://" + host + "/s/" + shareID
 	if _, err := a.DB.Exec(`INSERT INTO share_links (id,user_id,file_id,connected_account_id,provider_file_id,permission_id,url,expires_at,auto_revoke) VALUES (?,?,?,?,?,?,?,?,1)`,
-		shareID, user.ID, fileID, accountID, providerFileID, perm.ID, link, nullIfEmpty(expiresAt)); err != nil {
+		shareID, user.ID, fileID, accountID, providerFileID, perm.ID, pageURL, nullIfEmpty(expiresAt)); err != nil {
 		writeError(w, 500, "SHARE_FAILED", "Link created in Drive but could not be saved locally.")
 		return
 	}
 	a.logActivity(r, user.ID, accountID, "file_share", "file", fileID, name, size, "Public link created")
 	a.notify(user.ID, "Link publik dibuat", "Public link untuk "+name+" sudah aktif.", "link", "default")
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "url": link, "shareId": shareID})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "url": pageURL, "shareId": shareID})
 }
 
 // drivePermissionRole maps a UI role onto a Drive role.
@@ -3369,6 +3400,74 @@ func (a *App) revokeShare(w http.ResponseWriter, r *http.Request) {
 	_, _ = a.DB.Exec(`UPDATE share_links SET revoked_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`, shareID, user.ID)
 	a.logActivity(r, user.ID, accountID, "file_unshare", "file", fileID, name, 0, "Public link revoked")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// sharePage serves a tiny branded landing page for a public link: name, size, PanDrive mark and a
+// download button that points at Google directly (browser -> Google; the VPS sends only this HTML).
+func (a *App) sharePage(w http.ResponseWriter, r *http.Request) {
+	shareID := r.PathValue("id")
+	var name, mimeType, storedURL, expiresAt string
+	var size int64
+	err := a.DB.QueryRow(`SELECT COALESCE(f.name,''), COALESCE(f.mime_type,''), s.url, COALESCE(s.expires_at,''), COALESCE(f.size_bytes,0)
+		FROM share_links s LEFT JOIN files f ON f.id=s.file_id
+		WHERE s.id=? AND s.revoked_at IS NULL`, shareID).Scan(&name, &mimeType, &storedURL, &expiresAt, &size)
+	if err != nil {
+		http.Error(w, `<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;background:#0f172a;color:#e2e8f0;display:grid;place-items:center;height:100vh"><div style="text-align:center"><h1>404</h1><p>Link tidak ditemukan atau sudah dicabut.</p></div>`, http.StatusNotFound)
+		return
+	}
+	expired := expiresAt != "" && func() bool {
+		t, err := time.Parse(time.RFC3339, expiresAt)
+		return err == nil && !t.After(time.Now())
+	}()
+	if expired {
+		http.Error(w, `<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;background:#0f172a;color:#e2e8f0;display:grid;place-items:center;height:100vh"><div style="text-align:center"><h1>Link kedaluwarsa</h1><p>Link ini sudah melewati masa berlaku dan dicabut.</p></div>`, http.StatusGone)
+		return
+	}
+	// Google's own download/viewer link: direct download for binary types, viewer for docs.
+	var driveURL string
+	if storedURL != "" && strings.Contains(storedURL, "drive.google.com") {
+		driveURL = storedURL
+	} else {
+		var providerFileID string
+		_ = a.DB.QueryRow(`SELECT provider_file_id FROM share_links WHERE id=?`, shareID).Scan(&providerFileID)
+		driveURL = "https://drive.google.com/uc?export=download&id=" + url.QueryEscape(providerFileID)
+	}
+	sizeLabel := fmt.Sprintf("%.1f KB", float64(size)/1024)
+	if size >= 1024*1024 {
+		sizeLabel = fmt.Sprintf("%.1f MB", float64(size)/(1024*1024))
+	}
+	if size >= 1024*1024*1024 {
+		sizeLabel = fmt.Sprintf("%.2f GB", float64(size)/(1024*1024*1024))
+	}
+	heavy := size >= 200*1024*1024
+	warn := ""
+	if heavy {
+		warn = `<p style="margin-top:8px;font-size:13px;color:#fbbf24">File besar (≥ 200 MB) — unduh lewat Wi-Fi untuk menghemat kuota.</p>`
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Robots-Tag", "noindex")
+	fmt.Fprintf(w, `<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>%s — PanDrive</title>
+<style>body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#0f172a;color:#e2e8f0;display:grid;place-items:center;min-height:100vh;margin:0;padding:24px}
+.card{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:32px;max-width:420px;width:100%%;text-align:center}
+.logo{width:56px;height:56px;border-radius:14px;margin-bottom:12px}
+h1{font-size:18px;margin:8px 0;word-break:break-word}.meta{font-size:13px;color:#94a3b8;margin:4px 0 20px}
+a.btn{display:inline-block;background:#2563eb;color:#fff;text-decoration:none;font-weight:700;padding:12px 28px;border-radius:12px;font-size:14px}
+a.btn:hover{background:#1d4ed8}.foot{margin-top:20px;font-size:11px;color:#64748b}</style></head>
+<body><div class="card"><img class="logo" src="/logo.png" alt="PanDrive"><h1>%s</h1>
+<p class="meta">%s · dibagikan lewat PanDrive</p>%s
+<a class="btn" href="%s" rel="noopener">Unduh / Buka file</a>
+<p class="foot">PanDrive by JhopanStore</p></div></body></html>`,
+		htmlEscape(name), htmlEscape(name), htmlEscape(sizeLabel), warn, htmlEscapeAttr(driveURL))
+}
+
+func htmlEscape(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&#34;")
+	return r.Replace(s)
+}
+
+func htmlEscapeAttr(s string) string {
+	return htmlEscape(s)
 }
 
 // revokeExpiredShares marks expired public links revoked and removes their "anyone" permission in

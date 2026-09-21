@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Image as ImageIcon, RefreshCw } from 'lucide-react'
+import { ExternalLink, Image as ImageIcon, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { PageHeader } from '@/components/drive/PageHeader'
@@ -109,7 +109,22 @@ export function GalleryPage() {
             <div className="space-y-0.5 p-3">
               <p className="truncate text-[13px] font-bold" title={item.name}>{item.name}</p>
               <p className="text-[11px] text-slate-500">{formatBytes(Number(item.sizeBytes))} · {formatDate(item.updatedAt)}</p>
-              <p className="truncate text-[11px] text-slate-400" title={item.connectedAccount.email}>{item.connectedAccount.email}{item.folder ? ` · ${item.folder.name}` : ''}</p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="truncate text-[11px] text-slate-400" title={item.connectedAccount.email}>{item.connectedAccount.email}{item.folder ? ` · ${item.folder.name}` : ''}</p>
+                <button
+                  type="button"
+                  title="Buka viewer Google (streaming, tidak lewat server ini)"
+                  onClick={async () => {
+                    try {
+                      const res = await apiFetch<{ url: string }>(`/files/${item.id}/view-url`)
+                      if (res.url) window.open(res.url, '_blank', 'noopener')
+                    } catch { setMessage('Gagal membuka viewer') }
+                  }}
+                  className="shrink-0 rounded-lg border border-slate-200 p-1 text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </button>
+              </div>
             </div>
           </Card>
         ))}

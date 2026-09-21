@@ -255,6 +255,16 @@ Every gallery card carries a coloured size badge so you can gauge mobile-data co
 
 Thumbnails themselves stay tiny (~10 KB each, lazy-loaded, straight from Google's CDN).
 
+## In-app preview & branded share pages
+
+- **Preview**: `GET /api/files/{id}/view-url` returns Drive's `webViewLink`; the UI opens Google's viewer
+  in a new tab (gallery cards carry a small open-in-viewer button). Streaming/download flows browser ->
+  Google — the VPS never proxies media.
+- **Share pages**: public links are now `https://<host>/s/<shareId>` — a ~1.4 KB branded landing page
+  (logo, file name, size, PanDrive credit) with a download button that goes straight to Google. The page
+  shows a Wi-Fi warning for files >= 200 MB, is `noindex`, returns 404 for revoked links and 410 Gone for
+  expired ones.
+
 ## Security
 
 - Every response carries `Content-Security-Policy` (`default-src 'self'`, hashed inline bootstrap script, `object-src 'none'`, `frame-ancestors 'none'`), computed from the embedded SPA shell so a rebuilt frontend cannot silently break it.
