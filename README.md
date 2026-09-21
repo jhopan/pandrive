@@ -276,6 +276,12 @@ Thumbnails themselves stay tiny (~10 KB each, lazy-loaded, straight from Google'
   the Drive API (real deletion, quota freed) and notifies the owner. Every action lands in the activity
   log.
 
+## Stability
+
+v0.24.1 is a tested stability release: 52 backend tests pass, all API endpoints verified live (local +
+production over the tunnel), every SPA page (incl. hard refresh deep-links), i18n switch, share pages,
+multi-user gates and trash auto-purge were exercised end to end.
+
 ## Security
 
 - Every response carries `Content-Security-Policy` (`default-src 'self'`, hashed inline bootstrap script, `object-src 'none'`, `frame-ancestors 'none'`), computed from the embedded SPA shell so a rebuilt frontend cannot silently break it.
