@@ -58,7 +58,7 @@ if (-not (Test-Path $envFile)) {
   @"
 APP_PORT=4000
 APP_BIND=127.0.0.1
-DATABASE_URL=data/9drive.db
+DATABASE_URL=data/pandrive.db
 JWT_ACCESS_SECRET=$jwt
 TOKEN_ENCRYPTION_KEY=$($key.Substring(0,32))
 "@ | Set-Content -Path $envFile -Encoding ASCII

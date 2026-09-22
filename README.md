@@ -162,7 +162,7 @@ Copy the tunnel credentials JSON next to the binary, write `tunnel.yml`, then se
 
 ```yaml
 tunnel: <tunnel-uuid>
-credentials-file: /opt/9drive/<tunnel-uuid>.json
+credentials-file: /opt/pandrive/<tunnel-uuid>.json
 ingress:
   - hostname: drive.renunganbot.qzz.io
     service: http://127.0.0.1:4000
@@ -204,7 +204,7 @@ checksum **before** touching the installed binary, keeps the previous binary as
 `pandrive-linux-amd64.prev`, swaps atomically, restarts the systemd unit, then health-checks
 `/health` for up to 20 s and rolls back automatically if the new build does not come up.
 
-Environment overrides: `GITHUB_REPO`, `INSTALL_DIR` (default `/opt/9drive`), `SERVICE` (default
+Environment overrides: `GITHUB_REPO`, `INSTALL_DIR` (default `/opt/pandrive`), `SERVICE` (default
 `pandrive`), `HEALTH_URL`, `GITHUB_TOKEN` (private repos / API rate limits).
 
 The binary embeds the frontend, so one release updates UI and API together. This replaced the old
@@ -309,12 +309,16 @@ curl -fsSL https://raw.githubusercontent.com/jhopan/pandrive/master/deploy/insta
 ```
 
 The script downloads `pandrive-linux-<arch>`, verifies it against the release's `SHA256SUMS`, installs to
-`/opt/9drive`, seeds a fresh `.env` with random secrets (never overwrites one), and — when run as root —
+`/opt/pandrive`, seeds a fresh `.env` with random secrets (never overwrites one), and — when run as root —
 creates and starts the `pandrive` systemd service with automatic rollback kept as `.prev`. Re-running it
 upgrades in place without touching the database.
 
+Upgrading from an old install under `/opt/9drive`? Set `INSTALL_DIR=/opt/9drive` (and `SERVICE`) so the
+script finds your existing data, or move the directory once:
+`sudo mv /opt/9drive /opt/pandrive`.
+
 Install locations (kept for data compatibility even though the product is PanDrive):
-binary & data live in `/opt/9drive` (override with `INSTALL_DIR`), the SQLite file is `data/9drive.db`,
+binary & data live in `/opt/pandrive` (override with `INSTALL_DIR`), the SQLite file is `data/pandrive.db`,
 and the systemd unit is `pandrive.service`.
 
 ## HTTPS with Caddy (or Cloudflare Tunnel)
@@ -350,7 +354,7 @@ drive.domainmu.com {
 }
 ```
 
-4. Run: `caddy start --config /opt/9drive/Caddyfile` (or systemd: `systemctl enable --now caddy`).
+4. Run: `caddy start --config /opt/pandrive/Caddyfile` (or systemd: `systemctl enable --now caddy`).
 
 That is the entire configuration — HTTPS, certificate renewal and HTTP→HTTPS redirect are automatic.
 Nginx works equally well but needs certbot + manual TLS config; Caddy is recommended for simplicity.

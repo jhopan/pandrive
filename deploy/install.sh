@@ -74,7 +74,7 @@ case "$IS_TERMUX:$GOOS" in
   yes:*) INSTALL_DIR="${INSTALL_DIR:-${HOME}/.pandrive}" ;;
   no:windows) INSTALL_DIR="${INSTALL_DIR:-${HOME}/PanDrive}" ;;
   no:darwin) INSTALL_DIR="${INSTALL_DIR:-${HOME}/.pandrive}" ;;
-  *) INSTALL_DIR="${INSTALL_DIR:-/opt/9drive}" ;;
+  *) INSTALL_DIR="${INSTALL_DIR:-/opt/pandrive}" ;;
 esac
 
 API="https://api.github.com/repos/${REPO}"
@@ -127,7 +127,7 @@ if [ ! -f "${INSTALL_DIR}/.env" ]; then
   cat > "${INSTALL_DIR}/.env" <<EOF
 APP_PORT=4000
 APP_BIND=127.0.0.1
-DATABASE_URL=data/9drive.db
+DATABASE_URL=data/pandrive.db
 JWT_ACCESS_SECRET=${JWT}
 TOKEN_ENCRYPTION_KEY=${KEY}
 EOF

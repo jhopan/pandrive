@@ -28,4 +28,4 @@ backend-go/dist/
 backend-go/release/
 backend-go/pandrive-*
 backend-go/backend-go.exe
-backend-go/9drive-linux-*
+backend-go/pandrive-linux-*
