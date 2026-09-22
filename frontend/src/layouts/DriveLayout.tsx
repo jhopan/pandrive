@@ -425,8 +425,8 @@ export function DriveLayout() {
           </div>
           <Sidebar storage={storage} breakdown={breakdown} onLogout={logout} accounts={accounts} onNavigate={() => setSidebarOpen(false)} />
         </div>
-        <section className="min-w-0 flex-1 p-4 sm:p-6 lg:h-screen lg:overflow-y-auto lg:p-8">
-          <header className="flex w-full min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <section className="min-w-0 flex-1 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:p-6 lg:h-screen lg:overflow-y-auto lg:p-8">
+          <header className="app-header flex w-full min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center justify-between gap-3 lg:hidden">
               <div className="flex min-w-0 items-center gap-3">
                 <Button variant="outline" size="icon" aria-label="Open sidebar" onClick={() => setSidebarOpen(true)}>

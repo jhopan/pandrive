@@ -351,6 +351,17 @@ drive.domainmu.com {
 That is the entire configuration — HTTPS, certificate renewal and HTTP→HTTPS redirect are automatic.
 Nginx works equally well but needs certbot + manual TLS config; Caddy is recommended for simplicity.
 
+## Install as a phone app (PWA)
+
+The web UI is a full PWA — install it on a phone without any APK:
+
+1. Open `https://drive.renunganbot.qzz.io` in Chrome (Android) or Safari (iOS).
+2. Android: menu ⋮ → **Add to Home screen**. iOS: Share → **Add to Home Screen**.
+3. It opens fullscreen with the PanDrive icon — no store, updates arrive automatically.
+
+Mobile polish included: notch/status-bar safe areas, 40px touch targets, no iOS input auto-zoom,
+drawer sidebar, wrapping toolbar.
+
 ## API Keys (programmatic access)
 
 Settings → API Keys (sidebar, System group). A key (`pd_...`) authenticates REST calls without a browser

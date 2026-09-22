@@ -410,3 +410,46 @@ aside .card button.text-orange-600:hover {
   color: #ff8787 !important;
   transform: translateY(-1px);
 }
+
+
+/* pandrive-mobile-harden: safe areas, touch feel, no bounce */
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+body {
+  overscroll-behavior-y: none;
+  -webkit-tap-highlight-color: transparent;
+}
+/* notch / home-bar safe spacing for the PWA shell */
+.app-shell, .app-header, .app-footer {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+.app-header {
+  padding-top: env(safe-area-inset-top);
+}
+.app-footer {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+/* desktop-like tables scroll horizontally instead of breaking the layout on phones */
+table {
+  min-width: 0;
+}
+/* form controls ≥16px on mobile: prevents iOS auto-zoom on focus */
+@media (max-width: 640px) {
+  input, select, textarea {
+    font-size: 16px;
+  }
+}
+
+/* mobile: comfortable touch targets for sidebar rows + header buttons */
+@media (max-width: 640px) {
+  aside nav a {
+    min-height: 40px;
+  }
+  header button {
+    min-height: 40px;
+    min-width: 40px;
+  }
+}

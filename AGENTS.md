@@ -724,3 +724,17 @@ covered it; keep `--retry 3` on every curl.
 - Scopes column exists but all keys currently act as their owner; admin/settings/auth endpoints must
   stay session-JWT-only for future scope work.
 - Max 10 active keys per user (400 TOO_MANY_KEYS).
+
+### 📱 PWA + mobile polish
+
+- Manifest/SW/icons were already correct; do NOT precache index.html in the SW (stale CSP trap — see
+  folder-icons reference).
+- index.html: `viewport-fit=cover`, `apple-mobile-web-app-capable` + `status-bar-style
+  black-translucent` + `apple-mobile-web-app-title`, theme-color `#0f172a` (matches the dark shell).
+- `style.css` block `pandrive-mobile-harden`: safe-area insets (left/right/top on shell+header, bottom
+  on the content section via `pb-[max(1rem,env(safe-area-inset-bottom))]`), `overscroll-behavior-y:
+  none`, tap-highlight off, 16px inputs on ≤640px (stops iOS focus zoom), 40px touch targets for
+  `aside nav a` + `header button` on ≤640px.
+- Tailwind minifier rewrites `(max-width:640px)` to `(width<=640px)` — grep for `width<=640px` when
+  checking the built CSS, or you will falsely conclude the rules are missing.
+- AllFilesPage toolbar: `flex-wrap` + "New Folder" shortens to "Folder" below `sm`.

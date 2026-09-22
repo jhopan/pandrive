@@ -720,7 +720,7 @@ export function AllFilesPage() {
   useEffect(() => {
     const sizeLabels: FolderSizeScale[] = ['xs', 'sm', 'md', 'lg']
     setHeaderActions(
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {/* Folder size scale picker */}
         <div className="hidden sm:flex items-center gap-0.5 rounded-xl border border-slate-200 bg-slate-50 p-0.5">
           {sizeLabels.map((s) => (
@@ -747,7 +747,7 @@ export function AllFilesPage() {
           <Upload className="h-3.5 w-3.5" />Upload
         </Button>
         <Button size="sm" variant="outline" onClick={() => setFolderOpen(true)}>
-          <FolderPlus className="h-3.5 w-3.5" />New Folder
+          <FolderPlus className="h-3.5 w-3.5" /><span className="hidden sm:inline">New Folder</span><span className="sm:hidden">Folder</span>
         </Button>
         <Button size="sm" variant="outline" disabled={syncingDrive} onClick={syncGoogleDrive}>
           <RefreshCw className={syncingDrive ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} />
