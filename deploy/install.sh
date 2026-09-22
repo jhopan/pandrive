@@ -21,7 +21,7 @@
 set -euo pipefail
 
 REPO="${GITHUB_REPO:-jhopan/pandrive}"
-SERVICE="${SERVICE:-9drive}"
+SERVICE="${SERVICE:-pandrive}"
 GO_MIN="1.26"
 
 WANT_GO=no; WANT_CADDY=no; CADDY_DOMAIN=""; WANT_SYSTEM=auto; VERSION_ARG=""

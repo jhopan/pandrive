@@ -13,7 +13,7 @@ set -euo pipefail
 
 REPO="${GITHUB_REPO:-jhopan/pandrive}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/9drive}"
-SERVICE="${SERVICE:-9drive}"
+SERVICE="${SERVICE:-pandrive}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:4000/health}"
 LIST_COUNT="${LIST_COUNT:-3}"
 

@@ -205,7 +205,7 @@ checksum **before** touching the installed binary, keeps the previous binary as
 `/health` for up to 20 s and rolls back automatically if the new build does not come up.
 
 Environment overrides: `GITHUB_REPO`, `INSTALL_DIR` (default `/opt/9drive`), `SERVICE` (default
-`9drive`), `HEALTH_URL`, `GITHUB_TOKEN` (private repos / API rate limits).
+`pandrive`), `HEALTH_URL`, `GITHUB_TOKEN` (private repos / API rate limits).
 
 The binary embeds the frontend, so one release updates UI and API together. This replaced the old
 manual `scp` + restart flow.
@@ -310,8 +310,12 @@ curl -fsSL https://raw.githubusercontent.com/jhopan/pandrive/master/deploy/insta
 
 The script downloads `pandrive-linux-<arch>`, verifies it against the release's `SHA256SUMS`, installs to
 `/opt/9drive`, seeds a fresh `.env` with random secrets (never overwrites one), and — when run as root —
-creates and starts the `9drive` systemd service with automatic rollback kept as `.prev`. Re-running it
+creates and starts the `pandrive` systemd service with automatic rollback kept as `.prev`. Re-running it
 upgrades in place without touching the database.
+
+Install locations (kept for data compatibility even though the product is PanDrive):
+binary & data live in `/opt/9drive` (override with `INSTALL_DIR`), the SQLite file is `data/9drive.db`,
+and the systemd unit is `pandrive.service`.
 
 ## HTTPS with Caddy (or Cloudflare Tunnel)
 
