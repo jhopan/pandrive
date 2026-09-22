@@ -24,6 +24,7 @@ const StoragePage = lazy(() => import('@/pages/StoragePage').then(({ StoragePage
 const TrashPage = lazy(() => import('@/pages/TrashPage').then(({ TrashPage }) => ({ default: TrashPage })))
 const GalleryPage = lazy(() => import('@/pages/GalleryPage').then(({ GalleryPage }) => ({ default: GalleryPage })))
 const ProxyPage = lazy(() => import('@/pages/ProxyPage').then(({ ProxyPage }) => ({ default: ProxyPage })))
+const ApiKeysPage = lazy(() => import('@/pages/ApiKeysPage').then(({ ApiKeysPage }) => ({ default: ApiKeysPage })))
 
 function PageLoader() {
   return <main className="grid min-h-screen place-items-center text-sm font-semibold text-slate-500">Loading PanDrive…</main>
@@ -57,6 +58,7 @@ function App() {
               <Route path="rate-limits" element={<RateLimitsPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="proxy" element={<ProxyPage />} />
+              <Route path="api-keys" element={<ApiKeysPage />} />
             </Route>
           </Route>
           <Route path="*" element={<Navigate to="/all-files" replace />} />

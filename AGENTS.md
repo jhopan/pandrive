@@ -714,3 +714,13 @@ covered it; keep `--retry 3` on every curl.
 - Tunnel status reads TUNNEL_ID/TUNNEL_TOKEN from env or `.env` (Config struct has no tunnel fields).
 - UI: `/proxy` page (System group). Provider validation: only none/caddy/cloudflare; domain must
   contain a dot.
+
+### 🔑 API Keys (v0.27.x)
+
+- Table `api_keys`: `prefix` (11 chars, lookup) + `key_hash` (SHA-256 of `pd_...`; plaintext NEVER stored).
+- `requireAuth` accepts `Bearer pd_...` BEFORE JWT parsing → `userFromAPIKey` (hash lookup, revoked/
+  disabled checks, last-used stamp throttled 1/minute).
+- Endpoints: `GET/POST /api/keys`, `DELETE /api/keys/{id}` (revoke), `DELETE /api/keys/{id}/hard`.
+- Scopes column exists but all keys currently act as their owner; admin/settings/auth endpoints must
+  stay session-JWT-only for future scope work.
+- Max 10 active keys per user (400 TOO_MANY_KEYS).

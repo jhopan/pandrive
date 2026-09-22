@@ -29,6 +29,7 @@ import {
   Clock,
   Globe,
   Image,
+  KeyRound,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { BrandLogo } from '@/components/drive/BrandLogo'
@@ -72,6 +73,7 @@ const menuGroups: { label: string; items: { label: string; icon: React.ElementTy
       { label: 'Quota Tracker', icon: Gauge, href: '/quota' },
       { label: 'Settings', icon: Settings, href: '/settings' },
       { label: 'Reverse Proxy', icon: Globe, href: '/proxy' },
+      { label: 'API Keys', icon: KeyRound, href: '/api-keys' },
     ],
   },
 ]

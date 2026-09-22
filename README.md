@@ -351,6 +351,22 @@ drive.domainmu.com {
 That is the entire configuration — HTTPS, certificate renewal and HTTP→HTTPS redirect are automatic.
 Nginx works equally well but needs certbot + manual TLS config; Caddy is recommended for simplicity.
 
+## API Keys (programmatic access)
+
+Settings → API Keys (sidebar, System group). A key (`pd_...`) authenticates REST calls without a browser
+session — built for Android/scripts:
+
+```
+curl -H "Authorization: Bearer pd_YOUR_KEY" https://your-host/api/files
+```
+
+- Shown **once** at creation; only a SHA-256 hash + 11-char prefix are stored.
+- Revoke takes effect instantly; hard-delete removes the row. Max 10 active keys per user.
+- Every use stamps `last_used_at` (throttled to once per minute) — visible in the keys list.
+- Scope: a valid key acts as its owning user on data endpoints (`/files`, `/folders`, `/gallery`,
+  `/recent`, `/search`, `/starred`, `/shares`, transfers, uploads). It CANNOT touch auth/session
+  endpoints, admin users, or app settings.
+
 ## Security
 
 - Every response carries `Content-Security-Policy` (`default-src 'self'`, hashed inline bootstrap script, `object-src 'none'`, `frame-ancestors 'none'`), computed from the embedded SPA shell so a rebuilt frontend cannot silently break it.

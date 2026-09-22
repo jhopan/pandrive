@@ -309,6 +309,15 @@ CREATE INDEX IF NOT EXISTS activity_log_action_idx ON activity_log(user_id, acti
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS api_keys (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
+  prefix TEXT NOT NULL, key_hash TEXT NOT NULL,
+  scopes TEXT NOT NULL DEFAULT 'read',
+  last_used_at TEXT, revoked_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS api_keys_user_idx ON api_keys(user_id, revoked_at);
+CREATE INDEX IF NOT EXISTS api_keys_prefix_idx ON api_keys(prefix);
 `)
 	if err != nil {
 		return err
@@ -543,6 +552,10 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("GET /api/settings/proxy", a.requireAuth(a.getProxySettings))
 	mux.HandleFunc("PUT /api/settings/proxy", a.requireAuth(a.putProxySettings))
 	mux.HandleFunc("POST /api/settings/proxy/caddyfile", a.requireAuth(a.writeCaddyfile))
+	mux.HandleFunc("GET /api/keys", a.requireAuth(a.listAPIKeys))
+	mux.HandleFunc("POST /api/keys", a.requireAuth(a.createAPIKey))
+	mux.HandleFunc("DELETE /api/keys/{id}", a.requireAuth(a.revokeAPIKey))
+	mux.HandleFunc("DELETE /api/keys/{id}/hard", a.requireAuth(a.deleteAPIKey))
 	mux.HandleFunc("GET /system/google-config", a.requireAuth(a.getGoogleConfig))
 	mux.HandleFunc("POST /system/google-config", a.requireAuth(a.saveGoogleConfig))
 	mux.HandleFunc("DELETE /system/google-config/{id}", a.requireAuth(a.deleteGoogleConfig))
@@ -2439,6 +2452,17 @@ func (a *App) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication required.")
 			return
 		}
+		// API keys (pd_...) authenticate without a browser session: hashed lookup, last-used stamp,
+		// scope check. A valid key acts as its owner for read/write endpoints (never admin ones).
+		if strings.HasPrefix(tokenString, "pd_") {
+			user, ok := a.userFromAPIKey(tokenString)
+			if !ok {
+				writeError(w, http.StatusUnauthorized, "AUTH_INVALID", "Invalid or revoked API key.")
+				return
+			}
+			next(w, r.WithContext(context.WithValue(r.Context(), userKey, user)))
+			return
+		}
 		token, err := jwt.Parse(tokenString, func(t *jwt.Token) (any, error) {
 			if t.Method != jwt.SigningMethodHS256 {
 				return nil, errors.New("unexpected signing method")
@@ -3934,6 +3958,155 @@ func (a *App) writeCaddyfile(w http.ResponseWriter, r *http.Request) {
 func commandExists(name string) bool {
 	_, err := exec.LookPath(name)
 	return err == nil
+}
+
+// ---- API keys (pd_...) for programmatic access (Android / scripts) ----
+
+// generateAPIKey returns (plaintext, prefix, hash). Only the SHA-256 hash is stored; the plaintext is
+// shown to the user exactly once at creation. The 8-char prefix enables lookup + identification.
+func generateAPIKey() (string, string, string) {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return "", "", ""
+	}
+	secret := base64.RawURLEncoding.EncodeToString(buf)
+	key := "pd_" + secret
+	prefix := key[:11]
+	sum := sha256.Sum256([]byte(key))
+	return key, prefix, hex.EncodeToString(sum[:])
+}
+
+// apiKeyHash is the stored form of a plaintext key.
+func apiKeyHash(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
+}
+
+// userFromAPIKey authenticates a pd_ key: hash lookup, revocation + user-disabled checks, last-used
+// stamp (throttled to once per minute to avoid write amplification), and returns the owning user.
+func (a *App) userFromAPIKey(key string) (authUser, bool) {
+	prefix := key
+	if len(prefix) > 11 {
+		prefix = prefix[:11]
+	}
+	var userID, scopes, revokedAt string
+	var disabled int
+	err := a.DB.QueryRow(`SELECT k.user_id, k.scopes, COALESCE(k.revoked_at,''), COALESCE(u.disabled,0)
+		FROM api_keys k JOIN users u ON u.id=k.user_id
+		WHERE k.prefix=? AND k.key_hash=?`, prefix, apiKeyHash(key)).Scan(&userID, &scopes, &revokedAt, &disabled)
+	if err != nil || revokedAt != "" || disabled == 1 {
+		return authUser{}, false
+	}
+	// stamp last-used at most once per minute per key
+	_, _ = a.DB.Exec(`UPDATE api_keys SET last_used_at=?
+		WHERE prefix=? AND (last_used_at IS NULL OR datetime(last_used_at) <= datetime('now','-1 minute'))`,
+		time.Now().UTC().Format(time.RFC3339Nano), prefix)
+	_ = scopes // reserved for fine-grained scopes; all keys currently act as their owner
+	var name, email, role string
+	if err := a.DB.QueryRow(`SELECT name, email, COALESCE(role,'user') FROM users WHERE id=?`, userID).Scan(&name, &email, &role); err != nil {
+		return authUser{}, false
+	}
+	return authUser{ID: userID, Name: name, Email: email, Role: role}, true
+}
+
+// listAPIKeys returns the user's keys WITHOUT secrets (prefix only + status).
+func (a *App) listAPIKeys(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	rows, err := a.DB.Query(`SELECT id, name, prefix, scopes, COALESCE(last_used_at,''), COALESCE(revoked_at,''), created_at
+		FROM api_keys WHERE user_id=? ORDER BY created_at DESC`, user.ID)
+	if err != nil {
+		writeError(w, 500, "KEYS_FAILED", "Unable to list API keys.")
+		return
+	}
+	defer rows.Close()
+	keys := []map[string]any{}
+	for rows.Next() {
+		var id, name, prefix, scopes, lastUsed, revoked, created string
+		if err := rows.Scan(&id, &name, &prefix, &scopes, &lastUsed, &revoked, &created); err != nil {
+			writeError(w, 500, "KEYS_FAILED", "Unable to read API keys.")
+			return
+		}
+		keys = append(keys, map[string]any{
+			"id": id, "name": name, "prefix": prefix, "scopes": scopes,
+			"lastUsedAt": lastUsed, "revoked": revoked != "", "createdAt": created,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"keys": keys, "total": len(keys)})
+}
+
+// createAPIKey mints a key. The plaintext is returned ONCE in this response.
+func (a *App) createAPIKey(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, 400, "BAD_REQUEST", "Invalid request body.")
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
+		name = "API key"
+	}
+	if len(name) > 64 {
+		name = name[:64]
+	}
+	// cap active keys per user to keep the table sane
+	var active int
+	_ = a.DB.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE user_id=? AND revoked_at IS NULL`, user.ID).Scan(&active)
+	if active >= 10 {
+		writeError(w, 400, "TOO_MANY_KEYS", "Revoke an existing key first (max 10 active).")
+		return
+	}
+	key, prefix, hash := generateAPIKey()
+	id := randomID()
+	if _, err := a.DB.Exec(`INSERT INTO api_keys (id,user_id,name,prefix,key_hash,scopes) VALUES (?,?,?,?,?,?)`,
+		id, user.ID, name, prefix, hash, "read"); err != nil {
+		writeError(w, 500, "KEYS_FAILED", "Unable to create the API key.")
+		return
+	}
+	a.logActivity(r, user.ID, "", "api_key_create", "user", user.ID, user.Email, 0, "API key created: "+name)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"status": "ok", "id": id, "name": name, "prefix": prefix,
+		"key": key, "note": "Copy this key now - it is shown only once.",
+	})
+}
+
+// revokeAPIKey marks a key revoked (the hash stays for audit; the key stops working instantly).
+func (a *App) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	id := r.PathValue("id")
+	res, err := a.DB.Exec(`UPDATE api_keys SET revoked_at=? WHERE id=? AND user_id=? AND revoked_at IS NULL`,
+		time.Now().UTC().Format(time.RFC3339Nano), id, user.ID)
+	if err != nil {
+		writeError(w, 500, "KEYS_FAILED", "Unable to revoke the API key.")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeError(w, http.StatusNotFound, "KEY_NOT_FOUND", "API key not found or already revoked.")
+		return
+	}
+	var name string
+	_ = a.DB.QueryRow(`SELECT name FROM api_keys WHERE id=?`, id).Scan(&name)
+	a.logActivity(r, user.ID, "", "api_key_revoke", "user", user.ID, user.Email, 0, "API key revoked: "+name)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// deleteAPIKey removes the row entirely.
+func (a *App) deleteAPIKey(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	id := r.PathValue("id")
+	res, err := a.DB.Exec(`DELETE FROM api_keys WHERE id=? AND user_id=?`, id, user.ID)
+	if err != nil {
+		writeError(w, 500, "KEYS_FAILED", "Unable to delete the API key.")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeError(w, http.StatusNotFound, "KEY_NOT_FOUND", "API key not found.")
+		return
+	}
+	a.logActivity(r, user.ID, "", "api_key_revoke", "user", user.ID, user.Email, 0, "API key deleted")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // configDir returns a writable per-user config directory (falls back to the working dir).
