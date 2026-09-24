@@ -2106,6 +2106,15 @@ func (a *App) downloadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "DOWNLOAD_FAILED", "Unable to load file.")
 		return
 	}
+	// Non-split file: hand the browser Google's direct link (zero server bandwidth).
+	// The proxy path below stays as fallback for accounts where the link is missing.
+	if r.URL.Query().Get("proxy") != "1" {
+		fallback := "https://drive.google.com/uc?export=download&id=" + providerFileID
+		if link := a.driveFileLink(r.Context(), accountID, providerFileID, "webContentLink", fallback); link != "" {
+			http.Redirect(w, r, link, http.StatusFound)
+			return
+		}
+	}
 	accessToken, err := a.getGoogleToken(r.Context(), accountID, false)
 	if err != nil {
 		writeError(w, 500, "DOWNLOAD_FAILED", "Unable to read Drive token.")
@@ -3376,6 +3385,35 @@ func (a *App) shareFileUrl(w http.ResponseWriter, r *http.Request) {
 }
 
 // driveWebViewLink asks Drive for the canonical shareable URL of a file.
+// driveFileLink fetches one link field (webContentLink or webViewLink) for a Drive file,
+// with a static fallback URL when Google omits the field.
+func (a *App) driveFileLink(ctx context.Context, accountID, providerFileID, field, fallback string) string {
+	accessToken, err := a.getGoogleToken(ctx, accountID, false)
+	if err != nil {
+		return ""
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.GoogleDriveAPIURL+"/files/"+url.PathEscape(providerFileID)+"?fields="+field, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := a.HTTPClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<15))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ""
+	}
+	var out map[string]string
+	_ = json.Unmarshal(body, &out)
+	if link := out[field]; link != "" {
+		return link
+	}
+	return fallback
+}
+
 func (a *App) driveWebViewLink(ctx context.Context, accountID, providerFileID string) string {
 	accessToken, err := a.getGoogleToken(ctx, accountID, false)
 	if err != nil {
