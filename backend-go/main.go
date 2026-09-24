@@ -623,6 +623,8 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("GET /uploads/resumable/status/{id}", a.requireAuth(a.resumableStatus))
 	mux.HandleFunc("PUT /uploads/resumable/chunk/{id}", a.requireAuth(a.resumableChunk))
 	mux.HandleFunc("POST /uploads/split-init", a.requireAuth(a.initSplitUpload))
+	mux.HandleFunc("POST /rebalance/analyze", a.requireAuth(a.rebalanceAnalyze))
+	mux.HandleFunc("POST /rebalance/execute", a.requireAuth(a.rebalanceExecute))
 	// API routes duplicated under /api/* so page paths (/recent, /search, ...) stay SPA deep-links.
 	// The unprefixed forms shadowed the SPA and returned 401 JSON on hard refresh.
 	mux.HandleFunc("GET /api/recent", a.requireAuth(a.listRecent))
@@ -2458,6 +2460,161 @@ func (a *App) initSplitUpload(w http.ResponseWriter, r *http.Request) {
 // cleanupIncompleteSplit removes the logical row (sessions are garbage collected on next status check).
 func (a *App) cleanupIncompleteSplit(userID, splitID string) {
 	_, _ = a.DB.Exec(`DELETE FROM split_files WHERE id=? AND user_id=? AND status='incomplete'`, splitID, userID)
+}
+
+// rebalanceAnalyze builds a dry-run plan: move the largest files from source until its
+// usage drops to the target percent, limited by the destination account's free space.
+// No bytes move; the caller reviews the plan before execute.
+func (a *App) rebalanceAnalyze(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	var body struct {
+		SourceAccountID string  `json:"sourceAccountId"`
+		TargetAccountID string  `json:"targetAccountId"`
+		TargetPercent   float64 `json:"targetPercent"`
+	}
+	if err := decodeJSON(r, &body); err != nil || body.SourceAccountID == "" {
+		writeError(w, 400, "BAD_REQUEST", "sourceAccountId is required.")
+		return
+	}
+	if body.TargetPercent <= 0 || body.TargetPercent > 100 {
+		body.TargetPercent = 80 // sensible default
+	}
+	plan, err := a.buildRebalancePlan(r.Context(), user.ID, body.SourceAccountID, body.TargetAccountID, body.TargetPercent)
+	if err != nil {
+		writeError(w, 500, "REBALANCE_FAILED", err.Error())
+		return
+	}
+	if plan.Error != "" {
+		writeError(w, 400, "REBALANCE_NOT_POSSIBLE", plan.Error)
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+type rebalancePlan struct {
+	SourceAccountID  string             `json:"sourceAccountId"`
+	TargetAccountID  string             `json:"targetAccountId"`
+	SourceUsedBytes  string             `json:"sourceUsedBytes"`
+	SourceTotalBytes string             `json:"sourceTotalBytes"`
+	TargetFreeBytes  string             `json:"targetFreeBytes"`
+	TargetPercent    float64            `json:"targetPercent"`
+	Moves            []rebalanceMove    `json:"moves"`
+	MovedBytes       string             `json:"movedBytes"`
+	ResultUsedBytes  string             `json:"resultUsedBytes"`
+	Error            string             `json:"error,omitempty"`
+}
+
+type rebalanceMove struct {
+	FileID    string `json:"fileId"`
+	Name      string `json:"name"`
+	SizeBytes string `json:"sizeBytes"`
+}
+
+// buildRebalancePlan greedily selects largest-first files until source usage would drop
+// to the threshold or the destination runs out of room.
+func (a *App) buildRebalancePlan(ctx context.Context, userID, sourceID, targetID string, targetPercent float64) (rebalancePlan, error) {
+	plan := rebalancePlan{SourceAccountID: sourceID, TargetPercent: targetPercent}
+	var srcUsed, srcTotal, targetFree int64
+	err := a.DB.QueryRow(`SELECT COALESCE(s.used_bytes,0), COALESCE(s.total_bytes,0) FROM connected_accounts c JOIN storage_accounts s ON s.connected_account_id=c.id WHERE c.id=? AND c.user_id=? AND c.provider='google_drive' AND c.status='connected'`, sourceID, userID).Scan(&srcUsed, &srcTotal)
+	if err == sql.ErrNoRows {
+		return plan, fmt.Errorf("source account not found or not connected")
+	}
+	if err != nil {
+		return plan, err
+	}
+	plan.SourceUsedBytes = fmt.Sprint(srcUsed)
+	plan.SourceTotalBytes = fmt.Sprint(srcTotal)
+
+	if targetID == "" || targetID == sourceID {
+		err = a.DB.QueryRow(`SELECT c.id, COALESCE(s.available_bytes,0) FROM connected_accounts c JOIN storage_accounts s ON s.connected_account_id=c.id WHERE c.user_id=? AND c.provider='google_drive' AND c.status='connected' AND c.id<>? ORDER BY s.available_bytes DESC LIMIT 1`, userID, sourceID).Scan(&plan.TargetAccountID, &targetFree)
+	} else {
+		plan.TargetAccountID = targetID
+		err = a.DB.QueryRow(`SELECT COALESCE(s.available_bytes,0) FROM connected_accounts c JOIN storage_accounts s ON s.connected_account_id=c.id WHERE c.id=? AND c.user_id=? AND c.provider='google_drive' AND c.status='connected'`, targetID, userID).Scan(&targetFree)
+	}
+	if err == sql.ErrNoRows {
+		return plan, fmt.Errorf("no other connected account available as destination")
+	}
+	if err != nil {
+		return plan, err
+	}
+	plan.TargetFreeBytes = fmt.Sprint(targetFree)
+
+	keepBytes := int64(float64(srcTotal) * targetPercent / 100)
+	mustMove := srcUsed - keepBytes
+	if mustMove <= 0 {
+		plan.ResultUsedBytes = fmt.Sprint(srcUsed)
+		return plan, nil
+	}
+
+	rows, err := a.DB.Query(`SELECT f.id, f.name, f.size_bytes FROM files f WHERE f.user_id=? AND f.connected_account_id=? AND f.status='active' ORDER BY f.size_bytes DESC`, userID, sourceID)
+	if err != nil {
+		return plan, err
+	}
+	defer rows.Close()
+	var moved int64
+	for rows.Next() {
+		var mv rebalanceMove
+		var size int64
+		if err := rows.Scan(&mv.FileID, &mv.Name, &size); err != nil {
+			continue
+		}
+		if moved >= mustMove {
+			break
+		}
+		if moved+size > targetFree {
+			continue
+		}
+		mv.SizeBytes = fmt.Sprint(size)
+		plan.Moves = append(plan.Moves, mv)
+		moved += size
+	}
+	rows.Close()
+	plan.MovedBytes = fmt.Sprint(moved)
+	plan.ResultUsedBytes = fmt.Sprint(srcUsed - moved)
+	if moved < mustMove {
+		plan.Error = fmt.Sprintf("destination has too little free space: can only move %d of %d bytes needed", moved, mustMove)
+	}
+	return plan, nil
+}
+
+// rebalanceExecute runs a reviewed plan: server-side transfer (share -> copy -> delete
+// source) for every file, recording per-file results. Never proxies bytes.
+func (a *App) rebalanceExecute(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	var body struct {
+		SourceAccountID string           `json:"sourceAccountId"`
+		TargetAccountID string           `json:"targetAccountId"`
+		FileIDs         []string         `json:"fileIds"`
+	}
+	if err := decodeJSON(r, &body); err != nil || body.SourceAccountID == "" || body.TargetAccountID == "" || len(body.FileIDs) == 0 {
+		writeError(w, 400, "BAD_REQUEST", "sourceAccountId, targetAccountId and fileIds are required.")
+		return
+	}
+	type moveResult struct {
+		FileID string `json:"fileId"`
+		Name   string `json:"name"`
+		OK     bool   `json:"ok"`
+		Error  string `json:"error,omitempty"`
+	}
+	results := []moveResult{}
+	var okCount, failCount int
+	for _, fileID := range body.FileIDs {
+		var name string
+		_ = a.DB.QueryRow(`SELECT name FROM files WHERE id=? AND user_id=? AND connected_account_id=?`, fileID, user.ID, body.SourceAccountID).Scan(&name)
+		newFileID, err := a.transferFileInternal(r.Context(), user.ID, fileID, body.TargetAccountID)
+		res := moveResult{FileID: fileID, Name: name, OK: err == nil}
+		if err != nil {
+			res.Error = err.Error()
+			failCount++
+		} else {
+			res.FileID = newFileID
+			okCount++
+		}
+		results = append(results, res)
+	}
+	a.logActivity(r, user.ID, body.SourceAccountID, "rebalance", "account", body.SourceAccountID, "", 0, fmt.Sprintf("Rebalanced %d file(s) to %s (%d failed)", okCount, body.TargetAccountID, failCount))
+	a.notify(user.ID, "Rebalance selesai", fmt.Sprintf("%d file dipindah, %d gagal.", okCount, failCount), "truck", "default")
+	writeJSON(w, http.StatusOK, map[string]any{"results": results, "moved": okCount, "failed": failCount})
 }
 
 func (a *App) syncAccountFiles(ctx context.Context, userID, accountID string) (created, updated int, err error) {
@@ -5171,6 +5328,53 @@ func (a *App) deleteDriveFile(ctx context.Context, accountID, providerFileID str
 		return fmt.Errorf("drive delete failed (%d): %s", resp.StatusCode, string(body))
 	}
 	return nil
+}
+
+// transferFileInternal is the handler-free core of transferFile: share -> copy -> revoke
+// share -> delete source. Returns the new provider file id in the destination account.
+func (a *App) transferFileInternal(ctx context.Context, userID, fileID, targetAccountID string) (string, error) {
+	var providerFileID, name, mimeType, sourceAccountID string
+	var size int64
+	err := a.DB.QueryRow(`SELECT f.provider_file_id,f.name,f.mime_type,f.size_bytes,f.connected_account_id FROM files f WHERE f.id=? AND f.user_id=? AND f.status='active' AND f.provider='google_drive'`, fileID, userID).Scan(&providerFileID, &name, &mimeType, &size, &sourceAccountID)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("file not found")
+	}
+	if err != nil {
+		return "", err
+	}
+	if sourceAccountID == targetAccountID {
+		return "", fmt.Errorf("source and destination are the same account")
+	}
+	var targetEmail string
+	if err := a.DB.QueryRow(`SELECT email FROM connected_accounts WHERE id=? AND user_id=? AND status='connected'`, targetAccountID, userID).Scan(&targetEmail); err != nil {
+		return "", fmt.Errorf("destination account not found")
+	}
+	permissionID, err := a.shareFileForTransfer(ctx, sourceAccountID, providerFileID, targetEmail)
+	if err != nil {
+		return "", fmt.Errorf("share failed: %v", err)
+	}
+	newProviderID, err := a.copyFileAsAccount(ctx, targetAccountID, providerFileID, name)
+	if err != nil {
+		a.revokeTransferShare(ctx, sourceAccountID, providerFileID, permissionID)
+		return "", fmt.Errorf("copy failed: %v", err)
+	}
+	go a.revokeTransferShare(context.Background(), sourceAccountID, providerFileID, permissionID)
+	newFileID := randomID()
+	if _, err := a.DB.Exec(`INSERT INTO files (id,user_id,connected_account_id,provider,provider_file_id,name,mime_type,size_bytes) VALUES (?,?,?,?,?,?,?,?)`, newFileID, userID, targetAccountID, "google_drive", newProviderID, name, mimeType, size); err != nil {
+		return "", fmt.Errorf("copied in Drive but could not save locally")
+	}
+	if err := a.deleteDriveFile(ctx, sourceAccountID, providerFileID); err != nil {
+		return newFileID, nil // copied, but source delete failed -> caller sees success-with-note
+	}
+	_, _ = a.DB.Exec(`UPDATE files SET status='deleted', deleted_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`, fileID, userID)
+	// Refresh both quotas in the background.
+	go func() {
+		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = a.syncAccountQuota(c, sourceAccountID)
+		_ = a.syncAccountQuota(c, targetAccountID)
+	}()
+	return newFileID, nil
 }
 
 // transferFile moves (or copies) a file between two connected accounts server-side:

@@ -1,6 +1,7 @@
 import { type FormEvent, type ReactNode, useEffect, useState } from 'react'
 import { Outlet, useOutletContext, NavLink, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
+	ArrowLeftRight,
   Bell,
   FileArchive,
   Gauge,
@@ -73,6 +74,7 @@ const menuGroups: { label: string; items: { label: string; icon: React.ElementTy
       { label: 'Quota Tracker', icon: Gauge, href: '/quota' },
       { label: 'Settings', icon: Settings, href: '/settings' },
       { label: 'Reverse Proxy', icon: Globe, href: '/proxy' },
+      { label: 'Rebalancing', icon: ArrowLeftRight, href: '/rebalance' },
       { label: 'API Keys', icon: KeyRound, href: '/api-keys' },
     ],
   },

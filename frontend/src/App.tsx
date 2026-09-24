@@ -25,6 +25,7 @@ const TrashPage = lazy(() => import('@/pages/TrashPage').then(({ TrashPage }) =>
 const GalleryPage = lazy(() => import('@/pages/GalleryPage').then(({ GalleryPage }) => ({ default: GalleryPage })))
 const ProxyPage = lazy(() => import('@/pages/ProxyPage').then(({ ProxyPage }) => ({ default: ProxyPage })))
 const ApiKeysPage = lazy(() => import('@/pages/ApiKeysPage').then(({ ApiKeysPage }) => ({ default: ApiKeysPage })))
+const RebalancePage = lazy(() => import('@/pages/RebalancePage').then(({ RebalancePage }) => ({ default: RebalancePage })))
 
 function PageLoader() {
   return <main className="grid min-h-screen place-items-center text-sm font-semibold text-slate-500">Loading PanDrive…</main>
@@ -58,6 +59,7 @@ function App() {
               <Route path="rate-limits" element={<RateLimitsPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="proxy" element={<ProxyPage />} />
+              <Route path="rebalance" element={<RebalancePage />} />
               <Route path="api-keys" element={<ApiKeysPage />} />
             </Route>
           </Route>
