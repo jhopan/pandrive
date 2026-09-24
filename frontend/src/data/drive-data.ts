@@ -31,6 +31,7 @@ export type FileItem = {
   openedDate?: string
   folderId?: string | null
   folderName?: string | null
+  splitParts?: number
 }
 
 export const folders: FolderItem[] = [

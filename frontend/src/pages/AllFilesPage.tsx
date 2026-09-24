@@ -23,7 +23,7 @@ import type { FileItem, FolderItem } from '@/data/drive-data'
 import { useUpload } from '@/context/UploadContext'
 import { useDriveLayoutActions } from '@/layouts/DriveLayout'
 
-type BackendFile = { id: string; name: string; mimeType: string; sizeBytes: string; createdAt: string; folderId?: string | null; starred?: boolean; connectedAccount?: { email: string; provider: string }; folder?: { id: string; name: string } | null }
+type BackendFile = { id: string; name: string; mimeType: string; sizeBytes: string; createdAt: string; folderId?: string | null; starred?: boolean; splitParts?: number; connectedAccount?: { email: string; provider: string }; folder?: { id: string; name: string } | null }
 type BackendFolder = { id: string; name: string; color: string; iconUrl?: string | null; parentId?: string | null; providerFolderId?: string | null; starred?: boolean; updatedAt: string; sizeBytes?: string }
 type ConnectedAccount = { id: string; provider: string; email: string; displayName?: string | null; status: string }
 
@@ -56,7 +56,7 @@ function providerLabel(provider: string | undefined) {
 }
 
 function mapFile(file: BackendFile): FileItem {
-  return { id: file.id, name: file.name, mimeType: file.mimeType, sizeBytes: file.sizeBytes, createdAt: file.createdAt, accountEmail: file.connectedAccount?.email, accountProvider: providerLabel(file.connectedAccount?.provider), date: formatDate(file.createdAt), size: formatBytes(file.sizeBytes), access: file.connectedAccount?.email ?? providerLabel(file.connectedAccount?.provider), kind: mimeToKind(file.mimeType), shared: 1, starred: file.starred ?? false, folderId: file.folderId, folderName: file.folder?.name }
+  return { id: file.id, name: file.name, mimeType: file.mimeType, sizeBytes: file.sizeBytes, createdAt: file.createdAt, accountEmail: file.connectedAccount?.email, accountProvider: providerLabel(file.connectedAccount?.provider), date: formatDate(file.createdAt), size: formatBytes(file.sizeBytes), access: file.connectedAccount?.email ?? providerLabel(file.connectedAccount?.provider), kind: mimeToKind(file.mimeType), shared: 1, starred: file.starred ?? false, folderId: file.folderId, folderName: file.folder?.name, splitParts: file.splitParts ?? 0 }
 }
 
 function mapFolder(folder: BackendFolder): FolderItem {

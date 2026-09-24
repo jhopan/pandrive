@@ -123,6 +123,7 @@ export function FileGrid({
               <div className={cn("flex flex-wrap justify-center font-semibold text-slate-600", cfg.tagsShell)}>
                 <span className={cn("rounded-full bg-slate-100", cfg.tag)}>{file.size}</span>
                 <span className={cn("max-w-full truncate rounded-full bg-slate-100", cfg.tag)}>{file.access}</span>
+                {file.splitParts ? <span className={cn("rounded-full bg-violet-500/10 font-semibold text-violet-500", cfg.tag)} title={`Split across ${file.splitParts} accounts`}>{file.splitParts} part</span> : null}
               </div>
             </div>
           </Card>

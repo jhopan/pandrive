@@ -73,7 +73,10 @@ export async function apiFetch<T = any>(endpoint: string, options: RequestInit &
       clearSessionAndLogin()
     }
     const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.message || `API error: ${response.status}`)
+    const err = new Error(errorData.message || `API error: ${response.status}`) as Error & { code?: string; status?: number }
+    err.code = errorData.code
+    err.status = response.status
+    throw err
   }
 
   return response.json()

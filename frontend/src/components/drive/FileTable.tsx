@@ -32,6 +32,7 @@ export function FileTable({ files, mode = 'default', selectedFileIds = new Set<s
                     <span>{meta}</span>
                     <span>·</span>
                     <span>{file.size}</span>
+                    {file.splitParts ? <span className="flex items-center gap-0.5 rounded-md bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-violet-500" title={`Split across ${file.splitParts} accounts`}>{file.splitParts} part</span> : null}
                     {file.folderName && <><span>·</span><span className="flex items-center gap-0.5 text-blue-500"><FolderOpen className="h-3 w-3" />{file.folderName}</span></>}
                   </div>
                 </div>

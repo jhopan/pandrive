@@ -29,3 +29,5 @@ backend-go/release/
 backend-go/pandrive-*
 backend-go/backend-go.exe
 backend-go/pandrive-linux-*
+
+backend-go/data/*.db*

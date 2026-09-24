@@ -59,11 +59,11 @@ func TestGalleryFolderSizesExpiryAndNotify(t *testing.T) {
 	}
 	var gallery struct {
 		Items []struct {
-			ID       string `json:"id"`
-			Name     string `json:"name"`
-			Size     string `json:"sizeBytes"`
-			Thumb    string `json:"thumbnailUrl"`
-			Account  map[string]string `json:"connectedAccount"`
+			ID      string            `json:"id"`
+			Name    string            `json:"name"`
+			Size    string            `json:"sizeBytes"`
+			Thumb   string            `json:"thumbnailUrl"`
+			Account map[string]string `json:"connectedAccount"`
 		} `json:"items"`
 		Total int `json:"total"`
 	}

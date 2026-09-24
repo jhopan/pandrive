@@ -297,6 +297,22 @@ CREATE TABLE IF NOT EXISTS share_links (
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS share_links_user_idx ON share_links(user_id, revoked_at);
+CREATE TABLE IF NOT EXISTS split_files (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, mime_type TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL, part_count INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'incomplete',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS split_files_user_idx ON split_files(user_id);
+CREATE TABLE IF NOT EXISTS split_parts (
+  id TEXT PRIMARY KEY, split_id TEXT NOT NULL, part_index INTEGER NOT NULL,
+  file_id TEXT, connected_account_id TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+  FOREIGN KEY(split_id) REFERENCES split_files(id) ON DELETE CASCADE,
+  FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE SET NULL,
+  FOREIGN KEY(connected_account_id) REFERENCES connected_accounts(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS split_parts_split_idx ON split_parts(split_id);
 CREATE TABLE IF NOT EXISTS permission_grants (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL, connected_account_id TEXT NOT NULL,
   target_type TEXT NOT NULL, target_id TEXT NOT NULL, provider_file_id TEXT NOT NULL,
@@ -331,6 +347,7 @@ CREATE INDEX IF NOT EXISTS api_keys_prefix_idx ON api_keys(prefix);
 		`ALTER TABLE share_links ADD COLUMN expires_at TEXT`,
 		`ALTER TABLE share_links ADD COLUMN auto_revoke INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'`,
+		`ALTER TABLE upload_sessions ADD COLUMN split_id TEXT`,
 		`ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := a.DB.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
@@ -562,10 +579,10 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("PATCH /system/google-config/{id}", a.requireAuth(a.updateGoogleConfig))
 	mux.HandleFunc("POST /system/update", a.requireAuth(a.systemUpdate))
 	mux.HandleFunc("GET /system/version", a.requireAuth(a.updateInfoHandler))
-		mux.HandleFunc("GET /connected-accounts", a.requireAuth(a.listAccounts))
+	mux.HandleFunc("GET /connected-accounts", a.requireAuth(a.listAccounts))
 	mux.HandleFunc("GET /connected-accounts/google/connect-url", a.requireAuth(a.googleConnectURL))
 	mux.HandleFunc("GET /connected-accounts/google/callback", a.googleCallback)
-				mux.HandleFunc("PATCH /storage/routing-policy", a.requireAuth(a.updateRoutingPolicy))
+	mux.HandleFunc("PATCH /storage/routing-policy", a.requireAuth(a.updateRoutingPolicy))
 	mux.HandleFunc("POST /connected-accounts/{id}/sync-quota", a.requireAuth(a.syncQuota))
 	mux.HandleFunc("GET /folders", a.requireAuth(a.listFolders))
 	mux.HandleFunc("POST /folders", a.requireAuth(a.createFolder))
@@ -576,7 +593,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /files/{id}/share", a.requireAuth(a.shareFileUrl))
 	mux.HandleFunc("POST /files/{id}/public-permission", a.requireAuth(a.publicPermission))
 	mux.HandleFunc("POST /files/{id}/public-link", a.requireAuth(a.publicPermission))
-					mux.HandleFunc("POST /files/{id}/star", a.requireAuth(a.starFile))
+	mux.HandleFunc("POST /files/{id}/star", a.requireAuth(a.starFile))
 	mux.HandleFunc("POST /folders/{id}/star", a.requireAuth(a.starFolder))
 	mux.HandleFunc("GET /permissions", a.requireAuth(a.listPermissions))
 	mux.HandleFunc("POST /invites", a.requireAuth(a.grantAccess))
@@ -584,13 +601,13 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("DELETE /invites/{id}", a.requireAuth(a.revokeInvite))
 	mux.HandleFunc("GET /shares", a.requireAuth(a.listShares))
 	mux.HandleFunc("DELETE /shares/{id}", a.requireAuth(a.revokeShare))
-		mux.HandleFunc("POST /uploads/queue/{id}/cancel", a.requireAuth(a.cancelUpload))
+	mux.HandleFunc("POST /uploads/queue/{id}/cancel", a.requireAuth(a.cancelUpload))
 	mux.HandleFunc("DELETE /uploads/queue/{id}", a.requireAuth(a.removeUploadRecord))
 	mux.HandleFunc("GET /system/health", a.requireAuth(a.systemHealth))
 	mux.HandleFunc("GET /system/rate-limits", a.requireAuth(a.rateLimits))
 	mux.HandleFunc("POST /files/batch-download", a.requireAuth(a.batchDownloadZip))
 	mux.HandleFunc("GET /files/duplicates", a.requireAuth(a.findDuplicates))
-		mux.HandleFunc("POST /files/{id}/transfer", a.requireAuth(a.transferFile))
+	mux.HandleFunc("POST /files/{id}/transfer", a.requireAuth(a.transferFile))
 	mux.HandleFunc("POST /files/{id}/restore", a.requireAuth(a.restoreFile))
 	mux.HandleFunc("POST /files/{id}/purge", a.requireAuth(a.purgeFile))
 	mux.HandleFunc("POST /connected-accounts/{id}/empty-trash", a.requireAuth(a.emptyAccountTrash))
@@ -604,6 +621,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /uploads/resumable/init", a.requireAuth(a.initResumableUpload))
 	mux.HandleFunc("GET /uploads/resumable/status/{id}", a.requireAuth(a.resumableStatus))
 	mux.HandleFunc("PUT /uploads/resumable/chunk/{id}", a.requireAuth(a.resumableChunk))
+	mux.HandleFunc("POST /uploads/split-init", a.requireAuth(a.initSplitUpload))
 	// API routes duplicated under /api/* so page paths (/recent, /search, ...) stay SPA deep-links.
 	// The unprefixed forms shadowed the SPA and returned 401 JSON on hard refresh.
 	mux.HandleFunc("GET /api/recent", a.requireAuth(a.listRecent))
@@ -1524,7 +1542,7 @@ func (a *App) searchFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := a.DB.Query(`SELECT f.id,f.name,f.mime_type,f.size_bytes,COALESCE(f.created_at,''),COALESCE(f.updated_at,''),
-		COALESCE(c.id,''),COALESCE(c.email,''),COALESCE(d.id,''),COALESCE(d.name,''),f.folder_id,COALESCE(f.starred,0)
+		COALESCE(c.id,''),COALESCE(c.email,''),COALESCE(d.id,''),COALESCE(d.name,''),f.folder_id,COALESCE(f.starred,0),(SELECT COUNT(*) FROM split_parts sp JOIN split_files sf ON sf.id=sp.split_id WHERE sp.file_id=f.id AND sf.status='complete')
 		FROM files f
 		LEFT JOIN connected_accounts c ON c.id=f.connected_account_id
 		LEFT JOIN folders d ON d.id=f.folder_id
@@ -1540,8 +1558,9 @@ func (a *App) searchFiles(w http.ResponseWriter, r *http.Request) {
 		var id, name, mimeType, createdAt, updatedAt, accountID, email, folderIDOut, folderName string
 		var size int64
 		var starred int
+		var splitParts int
 		var folderID sql.NullString
-		if err := rows.Scan(&id, &name, &mimeType, &size, &createdAt, &updatedAt, &accountID, &email, &folderIDOut, &folderName, &folderID, &starred); err != nil {
+		if err := rows.Scan(&id, &name, &mimeType, &size, &createdAt, &updatedAt, &accountID, &email, &folderIDOut, &folderName, &folderID, &starred, &splitParts); err != nil {
 			writeError(w, 500, "SEARCH_FAILED", "Unable to read results.")
 			return
 		}
@@ -1551,7 +1570,7 @@ func (a *App) searchFiles(w http.ResponseWriter, r *http.Request) {
 		}
 		results = append(results, map[string]any{"id": id, "name": name, "mimeType": mimeType, "sizeBytes": fmt.Sprint(size),
 			"createdAt": createdAt, "updatedAt": updatedAt, "starred": starred == 1, "folder": folder,
-			"connectedAccount": map[string]string{"id": accountID, "email": email}})
+			"splitParts": splitParts, "connectedAccount": map[string]string{"id": accountID, "email": email}})
 	}
 
 	// Facets: per-account and per-kind counts over the SAME filter set (minus their own dimension
@@ -1595,7 +1614,7 @@ func (a *App) listFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 		return
 	}
-	query := `SELECT f.id,f.name,f.mime_type,f.size_bytes,f.provider_file_id,f.folder_id,f.created_at,f.updated_at,c.id,c.email,c.provider,COALESCE(d.name,''),COALESCE(f.deleted_at,''),COALESCE(f.starred,0),COALESCE(f.thumbnail_link,'') FROM files f LEFT JOIN connected_accounts c ON c.id=f.connected_account_id LEFT JOIN folders d ON d.id=f.folder_id WHERE ` + where + ` ORDER BY f.created_at DESC`
+	query := `SELECT f.id,f.name,f.mime_type,f.size_bytes,f.provider_file_id,f.folder_id,f.created_at,f.updated_at,c.id,c.email,c.provider,COALESCE(d.name,''),COALESCE(f.deleted_at,''),COALESCE(f.starred,0),COALESCE(f.thumbnail_link,''),(SELECT COUNT(*) FROM split_parts sp JOIN split_files sf ON sf.id=sp.split_id WHERE sp.file_id=f.id AND sf.status='complete') FROM files f LEFT JOIN connected_accounts c ON c.id=f.connected_account_id LEFT JOIN folders d ON d.id=f.folder_id WHERE ` + where + ` ORDER BY f.created_at DESC`
 	rows, err := a.DB.Query(query, args...)
 	if err != nil {
 		writeError(w, 500, "FILES_FAILED", "Unable to list files.")
@@ -1608,8 +1627,9 @@ func (a *App) listFiles(w http.ResponseWriter, r *http.Request) {
 		var size int64
 		var starred int
 		var thumbnail string
+		var splitParts int
 		var folderID sql.NullString
-		if err := rows.Scan(&id, &name, &mimeType, &size, &providerFileID, &folderID, &createdAt, &updatedAt, &accountID, &email, &provider, &folderName, &deletedAt, &starred, &thumbnail); err != nil {
+		if err := rows.Scan(&id, &name, &mimeType, &size, &providerFileID, &folderID, &createdAt, &updatedAt, &accountID, &email, &provider, &folderName, &deletedAt, &starred, &thumbnail, &splitParts); err != nil {
 			writeError(w, 500, "FILES_FAILED", "Unable to read files: "+err.Error())
 			return
 		}
@@ -1617,7 +1637,7 @@ func (a *App) listFiles(w http.ResponseWriter, r *http.Request) {
 		if folderID.Valid {
 			folder = map[string]string{"id": folderID.String, "name": folderName}
 		}
-		files = append(files, map[string]any{"id": id, "name": name, "mimeType": mimeType, "sizeBytes": fmt.Sprint(size), "providerFileId": providerFileID, "folder": folder, "createdAt": createdAt, "updatedAt": updatedAt, "deletedAt": deletedAt, "starred": starred == 1, "thumbnailUrl": thumbnail, "connectedAccount": map[string]string{"id": accountID, "email": email, "provider": provider}})
+		files = append(files, map[string]any{"id": id, "name": name, "mimeType": mimeType, "sizeBytes": fmt.Sprint(size), "providerFileId": providerFileID, "folder": folder, "createdAt": createdAt, "updatedAt": updatedAt, "deletedAt": deletedAt, "starred": starred == 1, "thumbnailUrl": thumbnail, "splitParts": splitParts, "connectedAccount": map[string]string{"id": accountID, "email": email, "provider": provider}})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"files": files})
 }
@@ -1863,6 +1883,32 @@ func (a *App) resumableChunk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 502, "GOOGLE_UPLOAD_FAILED", "Invalid Google upload response.")
 		return
 	}
+	var splitID sql.NullString
+	_ = a.DB.QueryRow(`SELECT split_id FROM upload_sessions WHERE id=?`, id).Scan(&splitID)
+	if splitID.Valid && splitID.String != "" {
+		// Split part: record the physical file and link it to its part slot.
+		if _, err := a.DB.Exec(`INSERT INTO files (id,user_id,connected_account_id,provider,provider_file_id,name,mime_type,size_bytes) VALUES (?,?,?,?,?,?,?,?)`, randomID(), user.ID, accountID, "google_drive", uploaded.ID, uploaded.Name, uploaded.MIMEType, size); err != nil {
+			writeError(w, 500, "UPLOAD_CHUNK_FAILED", "Unable to save uploaded part.")
+			return
+		}
+		var partFileID string
+		if err := a.DB.QueryRow(`SELECT id FROM files WHERE user_id=? AND provider_file_id=?`, user.ID, uploaded.ID).Scan(&partFileID); err == nil {
+			_, _ = a.DB.Exec(`INSERT INTO split_parts (id,split_id,part_index,file_id,connected_account_id,size_bytes) VALUES (?,?,?,?,?,?)`, randomID(), splitID.String, a.splitPartIndex(id), partFileID, accountID, size)
+		}
+		// Completed when every part row exists.
+		var want, have int
+		_ = a.DB.QueryRow(`SELECT part_count FROM split_files WHERE id=?`, splitID.String).Scan(&want)
+		_ = a.DB.QueryRow(`SELECT COUNT(*) FROM split_parts WHERE split_id=?`, splitID.String).Scan(&have)
+		if want > 0 && have == want {
+			_, _ = a.DB.Exec(`UPDATE split_files SET status='complete' WHERE id=?`, splitID.String)
+			a.logActivity(r, user.ID, accountID, "split_upload_done", "split", splitID.String, fileName, size, "All parts uploaded")
+			a.notify(user.ID, "Upload ter-split selesai", fmt.Sprintf("%s lengkap (%d part).", fileName, want), "white_check_mark", "default")
+		}
+		_, _ = a.DB.Exec(`UPDATE upload_sessions SET status='completed',completed_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), id)
+		a.logActivity(r, user.ID, accountID, "file_upload", "file", uploaded.ID, uploaded.Name, size, "Uploaded split part")
+		writeJSON(w, 200, map[string]string{"status": "completed"})
+		return
+	}
 	_, err = a.DB.Exec(`INSERT INTO files (id,user_id,connected_account_id,provider,provider_file_id,name,mime_type,size_bytes) VALUES (?,?,?,?,?,?,?,?)`, randomID(), user.ID, accountID, "google_drive", uploaded.ID, uploaded.Name, uploaded.MIMEType, size)
 	if err != nil {
 		writeError(w, 500, "UPLOAD_CHUNK_FAILED", "Unable to save uploaded file.")
@@ -1874,6 +1920,21 @@ func (a *App) resumableChunk(w http.ResponseWriter, r *http.Request) {
 	a.logActivity(r, user.ID, accountID, "file_upload", "file", uploaded.ID, uploaded.Name, size, "Uploaded to Drive")
 	a.notify(user.ID, "Upload selesai", uploaded.Name+" berhasil diupload.", "white_check_mark", "default")
 	writeJSON(w, 200, map[string]string{"status": "completed"})
+}
+
+// splitPartIndex derives the 1-based part index from a part session's file name
+// (pd-split-<splitID>.partNNN). Sessions are recorded in split order, so the
+// fallback is row order among the split's sessions.
+func (a *App) splitPartIndex(sessionID string) int {
+	var fileName string
+	_ = a.DB.QueryRow(`SELECT file_name FROM upload_sessions WHERE id=?`, sessionID).Scan(&fileName)
+	if i := strings.LastIndex(fileName, ".part"); i >= 0 {
+		var n int
+		if _, err := fmt.Sscan(fileName[i+5:], &n); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 func nextUploadOffset(rangeValue string) int64 {
@@ -1938,11 +1999,105 @@ func (a *App) selectUploadTarget(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"accountId": accountID, "email": email, "availableBytes": fmt.Sprint(available)})
 }
 
+// streamSplitDownload concatenates the split's parts (ordered by part_index) into
+// a single response body. Bytes pass through the server (this path cannot redirect
+// to Google because no single account holds the whole file).
+func (a *App) streamSplitDownload(w http.ResponseWriter, r *http.Request, userID, splitID string) {
+	rows, err := a.DB.Query(`SELECT sp.part_index, sp.size_bytes, f.provider_file_id, f.mime_type, sp.connected_account_id, sf.name, sf.mime_type, sf.size_bytes
+		FROM split_parts sp
+		JOIN files f ON f.id=sp.file_id
+		JOIN split_files sf ON sf.id=sp.split_id
+		WHERE sp.split_id=? AND sf.user_id=? AND sf.status='complete'
+		ORDER BY sp.part_index`, splitID, userID)
+	if err != nil {
+		writeError(w, 500, "DOWNLOAD_FAILED", "Unable to read split parts.")
+		return
+	}
+	type splitPart struct {
+		index      int
+		size       int64
+		providerID string
+		mime       string
+		accountID  string
+	}
+	var parts []splitPart
+	var logicalName, logicalMime string
+	var logicalSize int64
+	for rows.Next() {
+		var p splitPart
+		if err := rows.Scan(&p.index, &p.size, &p.providerID, &p.mime, &p.accountID, &logicalName, &logicalMime, &logicalSize); err != nil {
+			rows.Close()
+			writeError(w, 500, "DOWNLOAD_FAILED", "Unable to read split parts.")
+			return
+		}
+		parts = append(parts, p)
+	}
+	rows.Close()
+	if len(parts) == 0 {
+		writeError(w, http.StatusNotFound, "FILE_NOT_FOUND", "Split has no downloadable parts.")
+		return
+	}
+	var total int64
+	for _, p := range parts {
+		total += p.size
+	}
+	if total != logicalSize {
+		writeError(w, http.StatusConflict, "SPLIT_INCONSISTENT", "Split parts no longer match the logical file size.")
+		return
+	}
+	w.Header().Set("Content-Type", logicalMime)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+strings.ReplaceAll(logicalName, `"`, "'")+`"`)
+	w.Header().Set("Content-Length", fmt.Sprint(logicalSize))
+	w.Header().Set("X-Split-Parts", fmt.Sprint(len(parts)))
+	w.WriteHeader(http.StatusOK)
+	for _, p := range parts {
+		select {
+		case <-r.Context().Done():
+			return
+		default:
+		}
+		accessToken, err := a.getGoogleToken(r.Context(), p.accountID, false)
+		if err != nil {
+			return
+		}
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, a.GoogleDriveAPIURL+`/files/`+url.PathEscape(p.providerID)+`?alt=media`, nil)
+		if err != nil {
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		response, err := a.HTTPClient.Do(req)
+		if err == nil && response.StatusCode == http.StatusUnauthorized {
+			response.Body.Close()
+			if accessToken, err = a.getGoogleToken(r.Context(), p.accountID, true); err == nil {
+				req, _ = http.NewRequestWithContext(r.Context(), http.MethodGet, a.GoogleDriveAPIURL+`/files/`+url.PathEscape(p.providerID)+`?alt=media`, nil)
+				req.Header.Set("Authorization", "Bearer "+accessToken)
+				response, err = a.HTTPClient.Do(req)
+			}
+		}
+		if err != nil || response == nil || response.StatusCode != http.StatusOK {
+			if response != nil {
+				response.Body.Close()
+			}
+			return
+		}
+		_, _ = io.Copy(w, response.Body)
+		response.Body.Close()
+	}
+}
+
 func (a *App) downloadFile(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
 	fileID := r.PathValue("id")
+	// Split file? Stream all parts in order into one response (single byte seam).
+	var splitID string
+	var splitStatus string
+	err := a.DB.QueryRow(`SELECT sf.id, sf.status FROM split_files sf JOIN split_parts sp ON sp.split_id=sf.id WHERE sp.file_id=? AND sf.user_id=?`, fileID, user.ID).Scan(&splitID, &splitStatus)
+	if err == nil && splitStatus == "complete" {
+		a.streamSplitDownload(w, r, user.ID, splitID)
+		return
+	}
 	var providerFileID, name, mimeType, accountID string
-	err := a.DB.QueryRow(`SELECT f.provider_file_id,f.name,f.mime_type,c.id FROM files f JOIN connected_accounts c ON c.id=f.connected_account_id WHERE f.id=? AND f.user_id=? AND f.status='active' AND c.provider='google_drive'`, fileID, user.ID).Scan(&providerFileID, &name, &mimeType, &accountID)
+	err = a.DB.QueryRow(`SELECT f.provider_file_id,f.name,f.mime_type,c.id FROM files f JOIN connected_accounts c ON c.id=f.connected_account_id WHERE f.id=? AND f.user_id=? AND f.status='active' AND c.provider='google_drive'`, fileID, user.ID).Scan(&providerFileID, &name, &mimeType, &accountID)
 	if err == sql.ErrNoRows {
 		writeError(w, http.StatusNotFound, "FILE_NOT_FOUND", "File not found.")
 		return
@@ -2000,6 +2155,201 @@ func (a *App) downloadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(response.StatusCode)
 	_, _ = io.Copy(w, response.Body)
+}
+
+var (
+	// never split below splitMinSize bytes: overhead not worth it
+	splitMinSize = int64(100 << 20)
+	// keep this much headroom per account
+	splitBufferBytes = int64(128 << 20)
+)
+
+type partPlan struct {
+	AccountID string
+	Size      int64
+}
+
+// planSplit divides a file size across connected accounts by their ACTUAL free space.
+// Accounts get parts proportional to available bytes; each account keeps a small buffer.
+// Returns nil when no split is possible (callers fall back to the single-account path).
+func (a *App) planSplit(userID string, size int64) ([]partPlan, error) {
+	if size < splitMinSize {
+		return nil, nil
+	}
+	rows, err := a.DB.Query(`SELECT c.id, COALESCE(s.available_bytes,0) FROM connected_accounts c
+		JOIN storage_accounts s ON s.connected_account_id=c.id
+		WHERE c.user_id=? AND c.provider='google_drive' AND c.status='connected'
+		ORDER BY s.available_bytes DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type acct struct {
+		id    string
+		avail int64
+	}
+	var accts []acct
+	for rows.Next() {
+		var ac acct
+		if rows.Scan(&ac.id, &ac.avail) == nil && ac.avail > splitBufferBytes {
+			accts = append(accts, ac)
+		}
+	}
+	if len(accts) < 2 {
+		return nil, nil
+	}
+	var total int64
+	for _, ac := range accts {
+		total += ac.avail - splitBufferBytes
+	}
+	if total < size {
+		return nil, nil
+	}
+	// Greedy largest-first: fill the account with the most headroom, then the next,
+	// until the whole file is placed. Keeps parts few and allocation deterministic.
+	plans := make([]partPlan, 0, len(accts))
+	var assigned int64
+	for _, ac := range accts {
+		if assigned >= size {
+			break
+		}
+		capacity := ac.avail - splitBufferBytes
+		share := size - assigned
+		if share > capacity {
+			share = capacity
+		}
+		if share <= 0 {
+			continue
+		}
+		assigned += share
+		plans = append(plans, partPlan{AccountID: ac.id, Size: share})
+	}
+	if assigned < size {
+		return nil, nil
+	}
+	// Drop zero-size plans and re-index.
+	out := plans[:0]
+	for _, pl := range plans {
+		if pl.Size > 0 {
+			out = append(out, pl)
+		}
+	}
+	if len(out) < 2 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// initSplitUpload plans a multi-account split, opens one resumable session per part,
+// and returns the ordered part list. The browser then streams each part with the
+// existing /uploads/resumable/chunk endpoint (chunk routing is by session id).
+func (a *App) initSplitUpload(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value(userKey).(authUser)
+	var body struct {
+		FileName  string  `json:"fileName"`
+		MIMEType  string  `json:"mimeType"`
+		SizeBytes string  `json:"sizeBytes"`
+		FolderID  *string `json:"folderId"`
+	}
+	if err := decodeJSON(r, &body); err != nil || strings.TrimSpace(body.FileName) == "" {
+		writeError(w, 400, "BAD_REQUEST", "File name is required.")
+		return
+	}
+	var size int64
+	_, err := fmt.Sscan(body.SizeBytes, &size)
+	if err != nil || size <= 0 {
+		writeError(w, 400, "BAD_REQUEST", "sizeBytes must be a positive integer.")
+		return
+	}
+	mime := body.MIMEType
+	if mime == "" {
+		mime = "application/octet-stream"
+	}
+	plans, err := a.planSplit(user.ID, size)
+	if err != nil {
+		writeError(w, 500, "SPLIT_PLAN_FAILED", "Unable to plan split upload.")
+		return
+	}
+	if plans == nil {
+		writeError(w, 400, "NO_SPLIT_POSSIBLE", "No account has enough free space and a split would not fit either (after safety buffers).")
+		return
+	}
+	// Register the logical file first so part sessions can reference it.
+	splitID := randomID()
+	if _, err := a.DB.Exec(`INSERT INTO split_files (id,user_id,name,mime_type,size_bytes,part_count,status) VALUES (?,?,?,?,?,?, 'incomplete')`, splitID, user.ID, body.FileName, mime, size, len(plans)); err != nil {
+		writeError(w, 500, "SPLIT_INIT_FAILED", "Unable to record split file.")
+		return
+	}
+	type partOut struct {
+		Index        string `json:"index"`
+		Size         string `json:"sizeBytes"`
+		SessionID    string `json:"sessionId"`
+		AccountID    string `json:"accountId"`
+		AccountEmail string `json:"accountEmail"`
+	}
+	parts := make([]partOut, 0, len(plans))
+	for i, pl := range plans {
+		var encryptedToken string
+		err := a.DB.QueryRow(`SELECT access_token_encrypted FROM connected_accounts WHERE id=?`, pl.AccountID).Scan(&encryptedToken)
+		if err != nil {
+			a.cleanupIncompleteSplit(user.ID, splitID)
+			writeError(w, 500, "SPLIT_INIT_FAILED", "Unable to load Drive account for part "+fmt.Sprint(i+1)+".")
+			return
+		}
+		accessToken, err := a.decrypt(encryptedToken)
+		if err != nil {
+			a.cleanupIncompleteSplit(user.ID, splitID)
+			writeError(w, 500, "SPLIT_INIT_FAILED", "Unable to read Drive token.")
+			return
+		}
+		partName := fmt.Sprintf("pd-split-%s.part%03d", splitID, i+1)
+		metadata, _ := json.Marshal(map[string]string{"name": partName, "mimeType": mime})
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, a.GoogleUploadAPIURL+`?uploadType=resumable`, strings.NewReader(string(metadata)))
+		if err != nil {
+			a.cleanupIncompleteSplit(user.ID, splitID)
+			writeError(w, 500, "SPLIT_INIT_FAILED", "Unable to create Google upload.")
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+		req.Header.Set("X-Upload-Content-Type", mime)
+		req.Header.Set("X-Upload-Content-Length", fmt.Sprint(pl.Size))
+		response, err := a.HTTPClient.Do(req)
+		if err == nil {
+			defer response.Body.Close()
+			if response.StatusCode < 200 || response.StatusCode >= 300 {
+				err = fmt.Errorf("google status %d", response.StatusCode)
+			}
+		}
+		if err != nil {
+			a.cleanupIncompleteSplit(user.ID, splitID)
+			writeError(w, 502, "GOOGLE_UNAVAILABLE", "Google rejected part "+fmt.Sprint(i+1)+" init.")
+			return
+		}
+		googleSession := response.Header.Get("Location")
+		if googleSession == "" {
+			a.cleanupIncompleteSplit(user.ID, splitID)
+			writeError(w, 502, "GOOGLE_UPLOAD_INIT_FAILED", "Google did not return a session for part "+fmt.Sprint(i+1)+".")
+			return
+		}
+		sessionID := randomID()
+		if _, err := a.DB.Exec(`INSERT INTO upload_sessions (id,user_id,target_connected_account_id,folder_id,file_name,mime_type,size_bytes,status,google_session_uri,split_id) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+			sessionID, user.ID, pl.AccountID, body.FolderID, partName, mime, pl.Size, "uploading", a.encrypt(googleSession), splitID); err != nil {
+			a.cleanupIncompleteSplit(user.ID, splitID)
+			writeError(w, 500, "SPLIT_INIT_FAILED", "Unable to record part session.")
+			return
+		}
+		var email string
+		_ = a.DB.QueryRow(`SELECT email FROM connected_accounts WHERE id=?`, pl.AccountID).Scan(&email)
+		parts = append(parts, partOut{Index: fmt.Sprint(i + 1), Size: fmt.Sprint(pl.Size), SessionID: sessionID, AccountID: pl.AccountID, AccountEmail: email})
+	}
+	a.logActivity(r, user.ID, "", "split_upload_init", "split", splitID, body.FileName, size, fmt.Sprintf("Split into %d parts", len(plans)))
+	writeJSON(w, http.StatusOK, map[string]any{"splitId": splitID, "status": "incomplete", "parts": parts})
+}
+
+// cleanupIncompleteSplit removes the logical row (sessions are garbage collected on next status check).
+func (a *App) cleanupIncompleteSplit(userID, splitID string) {
+	_, _ = a.DB.Exec(`DELETE FROM split_files WHERE id=? AND user_id=? AND status='incomplete'`, splitID, userID)
 }
 
 func (a *App) syncAccountFiles(ctx context.Context, userID, accountID string) (created, updated int, err error) {
@@ -3906,8 +4256,8 @@ func (a *App) putProxySettings(w http.ResponseWriter, r *http.Request) {
 func (a *App) writeCaddyfile(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
 	var body struct {
-		Domain   string `json:"domain"`
-		AppPort  string `json:"appPort"`
+		Domain  string `json:"domain"`
+		AppPort string `json:"appPort"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, 400, "BAD_REQUEST", "Invalid request body.")
@@ -4171,7 +4521,6 @@ func (a *App) purgeOldTrash() (int, error) {
 	}
 	return purged, nil
 }
-
 
 // uploadQueue lists resumable-upload sessions so stuck or failed uploads can be seen.
 func (a *App) uploadQueue(w http.ResponseWriter, r *http.Request) {
@@ -4816,6 +5165,8 @@ func (a *App) purgeFile(w http.ResponseWriter, r *http.Request) {
 	var purgedName string
 	var purgedSize int64
 	_ = a.DB.QueryRow(`SELECT name,size_bytes FROM files WHERE id=? AND user_id=?`, fileID, user.ID).Scan(&purgedName, &purgedSize)
+	_, _ = a.DB.Exec(`UPDATE split_files SET status='incomplete' WHERE id IN (SELECT split_id FROM split_parts WHERE file_id=?)`, fileID)
+	_, _ = a.DB.Exec(`DELETE FROM split_parts WHERE file_id=?`, fileID)
 	_, _ = a.DB.Exec(`DELETE FROM files WHERE id=? AND user_id=?`, fileID, user.ID)
 	a.logActivity(r, user.ID, accountID, "file_purge", "file", fileID, purgedName, purgedSize, "Permanently deleted from Drive")
 	go func() {
@@ -5100,6 +5451,7 @@ func (a *App) deleteFile(w http.ResponseWriter, r *http.Request) {
 	var name, accountID string
 	var size int64
 	_ = a.DB.QueryRow(`SELECT name,connected_account_id,size_bytes FROM files WHERE id=? AND user_id=?`, fileID, user.ID).Scan(&name, &accountID, &size)
+	_, _ = a.DB.Exec(`UPDATE split_files SET status='incomplete' WHERE id IN (SELECT split_id FROM split_parts WHERE file_id=?)`, fileID)
 	a.logActivity(r, user.ID, accountID, "file_delete", "file", fileID, name, size, "Moved to trash")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

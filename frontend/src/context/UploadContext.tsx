@@ -70,6 +70,68 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     saveStoredSessions(stored)
   }
 
+  // uploadSplitSequential streams a file across multiple accounts when no single
+  // account can hold it: backend plans the parts (greedy largest-first), the browser
+  // uploads each part with the same resumable chunk endpoint, in order.
+  async function uploadSplitSequential(
+    file: File,
+    folderId: string | null,
+    onProgress: (percent: number) => void,
+    controller: AbortController
+  ) {
+    const CHUNK_SIZE = 32 * 1024 * 1024
+    const resp = await apiFetch<{ splitId: string; parts: Array<{ index: string; sizeBytes: string; sessionId: string }> }>('/uploads/split-init', {
+      method: 'POST',
+      body: JSON.stringify({
+        fileName: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        sizeBytes: String(file.size),
+        folderId: folderId || undefined
+      })
+    })
+    const parts = resp.parts.map(p => ({ ...p, size: Number(p.sizeBytes) }))
+    const totalSize = parts.reduce((sum, p) => sum + p.size, 0)
+    let fileOffset = 0
+    for (const part of parts) {
+      let partOffset = 0
+      while (partOffset < part.size) {
+        if (controller.signal.aborted) {
+          abortControllers.delete(file.name)
+          throw Object.assign(new Error('Upload paused'), { name: 'PauseError' })
+        }
+        const endOffset = Math.min(partOffset + CHUNK_SIZE, part.size)
+        const chunk = file.slice(fileOffset, fileOffset + (endOffset - partOffset))
+        const response = await fetch(`${API_URL}/uploads/resumable/chunk/${part.sessionId}`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${getAccessToken()}`,
+            'Content-Range': `bytes ${partOffset}-${endOffset - 1}/${part.size}`,
+            'Content-Length': String(chunk.size)
+          },
+          body: chunk,
+          signal: controller.signal
+        })
+        if (!response.ok) throw new Error('Split chunk upload failed')
+        const resData = await response.json() as { status: string; offset?: string }
+        if (resData.status === 'completed') break
+        partOffset = Number(resData.offset)
+        // Byte position in the logical file = bytes of earlier parts + this part's offset.
+        fileOffset = sumBefore(parts, part.index) + partOffset
+        onProgress(Math.min(99, Math.round((fileOffset / totalSize) * 100)))
+      }
+    }
+    onProgress(100)
+  }
+
+  function sumBefore(parts: Array<{ index: string; size: number }>, index: string): number {
+    let sum = 0
+    for (const p of parts) {
+      if (p.index === index) break
+      sum += p.size
+    }
+    return sum
+  }
+
   async function uploadSingleFileResumable(
     file: File,
     folderId: string | null,
@@ -92,16 +154,25 @@ export function UploadProvider({ children }: { children: ReactNode }) {
 
     // 1. Initialize or get status
     if (!sessionId) {
-      const initData = await apiFetch<{ sessionId: string; provider: string }>('/uploads/resumable/init', {
-        method: 'POST',
-        body: JSON.stringify({
-          fileName: file.name,
-          mimeType: file.type || 'application/octet-stream',
-          sizeBytes: String(file.size),
-          folderId: folderId || undefined,
-          targetAccountId: targetAccountId || undefined
+      let initData: { sessionId: string; provider: string }
+      try {
+        initData = await apiFetch<{ sessionId: string; provider: string }>('/uploads/resumable/init', {
+          method: 'POST',
+          body: JSON.stringify({
+            fileName: file.name,
+            mimeType: file.type || 'application/octet-stream',
+            sizeBytes: String(file.size),
+            folderId: folderId || undefined,
+            targetAccountId: targetAccountId || undefined
+          })
         })
-      })
+      } catch (initErr) {
+        // No single account fits: try a multi-account split (backend decides feasibility).
+        const code = (initErr as { code?: string })?.code || ''
+        if (code !== 'NO_SPLIT_POSSIBLE' && code !== 'NO_ACCOUNT_WITH_ENOUGH_SPACE') throw initErr
+        await uploadSplitSequential(file, folderId, onProgress, controller)
+        return
+      }
       sessionId = initData.sessionId
       setResumableSessions(prev => ({
         ...prev,
