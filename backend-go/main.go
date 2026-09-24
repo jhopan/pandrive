@@ -590,6 +590,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /files/sync-google", a.requireAuth(a.syncGoogleFiles))
 	mux.HandleFunc("GET /files/{id}/view-url", a.requireAuth(a.viewFileUrl))
 	mux.HandleFunc("GET /files/{id}/download", a.requireAuth(a.downloadFile))
+	mux.HandleFunc("GET /files/{id}/stream", a.requireAuth(a.streamFile))
 	mux.HandleFunc("POST /files/{id}/share", a.requireAuth(a.shareFileUrl))
 	mux.HandleFunc("POST /files/{id}/public-permission", a.requireAuth(a.publicPermission))
 	mux.HandleFunc("POST /files/{id}/public-link", a.requireAuth(a.publicPermission))
@@ -2002,6 +2003,10 @@ func (a *App) selectUploadTarget(w http.ResponseWriter, r *http.Request) {
 // streamSplitDownload concatenates the split's parts (ordered by part_index) into
 // a single response body. Bytes pass through the server (this path cannot redirect
 // to Google because no single account holds the whole file).
+// streamSplitDownload concatenates the split's parts (ordered by part_index) into one
+// response. With a Range header it serves exactly the requested window: parts outside
+// the window are skipped, boundary parts get an adjusted Range against Google. This is
+// what makes both resume-after-disconnect and video seek work on split files.
 func (a *App) streamSplitDownload(w http.ResponseWriter, r *http.Request, userID, splitID string) {
 	rows, err := a.DB.Query(`SELECT sp.part_index, sp.size_bytes, f.provider_file_id, f.mime_type, sp.connected_account_id, sf.name, sf.mime_type, sf.size_bytes
 		FROM split_parts sp
@@ -2045,12 +2050,53 @@ func (a *App) streamSplitDownload(w http.ResponseWriter, r *http.Request, userID
 		writeError(w, http.StatusConflict, "SPLIT_INCONSISTENT", "Split parts no longer match the logical file size.")
 		return
 	}
+
+	// Window: full file by default, or the byte range the client asked for.
+	rangeStart, rangeEnd := int64(0), logicalSize-1
+	rangeRequested := false
+	if spec := r.Header.Get("Range"); spec != "" {
+		if rs, re, ok := parseByteRange(spec, logicalSize); ok {
+			rangeStart, rangeEnd = rs, re
+			rangeRequested = true
+		}
+	}
+	windowLen := rangeEnd - rangeStart + 1
+
 	w.Header().Set("Content-Type", logicalMime)
-	w.Header().Set("Content-Disposition", `attachment; filename="`+strings.ReplaceAll(logicalName, `"`, "'")+`"`)
-	w.Header().Set("Content-Length", fmt.Sprint(logicalSize))
+	disposition := `attachment; filename="` + strings.ReplaceAll(logicalName, `"`, "'") + `"`
+	if r.Header.Get("X-PanDrive-Inline") == "1" {
+		disposition = `inline; filename="` + strings.ReplaceAll(logicalName, `"`, "'") + `"`
+	}
+	w.Header().Set("Content-Disposition", disposition)
+	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("X-Split-Parts", fmt.Sprint(len(parts)))
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Length", fmt.Sprint(windowLen))
+	if rangeRequested {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rangeStart, rangeEnd, logicalSize))
+		w.WriteHeader(http.StatusPartialContent)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+
+	var offset int64 // start offset of the current part inside the logical file
 	for _, p := range parts {
+		partStart, partEnd := offset, offset+p.size-1
+		offset += p.size
+		// Part entirely outside the window: skip.
+		if partEnd < rangeStart || partStart > rangeEnd {
+			continue
+		}
+		// Intersection of window with this part.
+		wantStart := rangeStart
+		if partStart > wantStart {
+			wantStart = partStart
+		}
+		wantEnd := rangeEnd
+		if partEnd < wantEnd {
+			wantEnd = partEnd
+		}
+		copyLen := wantEnd - wantStart + 1
+
 		select {
 		case <-r.Context().Done():
 			return
@@ -2060,29 +2106,82 @@ func (a *App) streamSplitDownload(w http.ResponseWriter, r *http.Request, userID
 		if err != nil {
 			return
 		}
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, a.GoogleDriveAPIURL+`/files/`+url.PathEscape(p.providerID)+`?alt=media`, nil)
+		fetchURL := a.GoogleDriveAPIURL + `/files/` + url.PathEscape(p.providerID) + `?alt=media`
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, fetchURL, nil)
 		if err != nil {
 			return
 		}
 		req.Header.Set("Authorization", "Bearer "+accessToken)
+		// Partial part: forward the window to Google so we never pull unneeded bytes.
+		if copyLen != p.size {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", wantStart-partStart, wantEnd-partStart))
+		}
 		response, err := a.HTTPClient.Do(req)
 		if err == nil && response.StatusCode == http.StatusUnauthorized {
 			response.Body.Close()
 			if accessToken, err = a.getGoogleToken(r.Context(), p.accountID, true); err == nil {
-				req, _ = http.NewRequestWithContext(r.Context(), http.MethodGet, a.GoogleDriveAPIURL+`/files/`+url.PathEscape(p.providerID)+`?alt=media`, nil)
+				req, _ = http.NewRequestWithContext(r.Context(), http.MethodGet, fetchURL, nil)
 				req.Header.Set("Authorization", "Bearer "+accessToken)
+				if copyLen != p.size {
+					req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", wantStart-partStart, wantEnd-partStart))
+				}
 				response, err = a.HTTPClient.Do(req)
 			}
 		}
-		if err != nil || response == nil || response.StatusCode != http.StatusOK {
+		if err != nil || response == nil || (response.StatusCode != http.StatusOK && response.StatusCode != http.StatusPartialContent) {
 			if response != nil {
 				response.Body.Close()
 			}
 			return
 		}
-		_, _ = io.Copy(w, response.Body)
+		_, _ = io.CopyN(w, response.Body, copyLen)
 		response.Body.Close()
 	}
+}
+
+// parseByteRange parses "bytes=A-B" (also open-ended "bytes=A-") against size.
+// Suffix ranges ("bytes=-N") are honored from the tail. Returns ok=false when the
+// header is unsatisfiable or malformed (caller then serves the full file).
+func parseByteRange(spec string, size int64) (start, end int64, ok bool) {
+	spec = strings.TrimPrefix(spec, "bytes=")
+	dash := strings.IndexByte(spec, '-')
+	if dash < 0 {
+		return 0, 0, false
+	}
+	first, second := strings.TrimSpace(spec[:dash]), strings.TrimSpace(spec[dash+1:])
+	if first == "" && second == "" {
+		return 0, 0, false
+	}
+	if first == "" {
+		// suffix: last N bytes
+		var n int64
+		if _, err := fmt.Sscan(second, &n); err != nil || n <= 0 {
+			return 0, 0, false
+		}
+		if n > size {
+			n = size
+		}
+		return size - n, size - 1, true
+	}
+	if _, err := fmt.Sscan(first, &start); err != nil || start < 0 || start >= size {
+		return 0, 0, false
+	}
+	end = size - 1
+	if second != "" {
+		if _, err := fmt.Sscan(second, &end); err != nil || end < start {
+			return 0, 0, false
+		}
+		if end >= size {
+			end = size - 1
+		}
+	}
+	return start, end, true
+}
+
+// streamFile is downloadFile's inline twin (no attachment header) for players.
+func (a *App) streamFile(w http.ResponseWriter, r *http.Request) {
+	r.Header.Set("X-PanDrive-Inline", "1")
+	a.downloadFile(w, r)
 }
 
 func (a *App) downloadFile(w http.ResponseWriter, r *http.Request) {
@@ -3360,13 +3459,19 @@ func (a *App) viewFileUrl(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(userKey).(authUser)
 	fileID := r.PathValue("id")
 	var providerFileID, accountID string
-	err := a.DB.QueryRow(`SELECT f.provider_file_id, f.connected_account_id FROM files f WHERE f.id=? AND f.user_id=? AND f.status='active'`, fileID, user.ID).Scan(&providerFileID, &accountID)
+	var splitParts int
+	err := a.DB.QueryRow(`SELECT f.provider_file_id, f.connected_account_id, (SELECT COUNT(*) FROM split_parts sp JOIN split_files sf ON sf.id=sp.split_id WHERE sp.file_id=f.id AND sf.status='complete') FROM files f WHERE f.id=? AND f.user_id=? AND f.status='active'`, fileID, user.ID).Scan(&providerFileID, &accountID, &splitParts)
 	if err == sql.ErrNoRows {
 		writeError(w, http.StatusNotFound, "FILE_NOT_FOUND", "File not found.")
 		return
 	}
 	if err != nil {
 		writeError(w, 500, "VIEW_FAILED", "Unable to load file.")
+		return
+	}
+	if splitParts > 0 {
+		// No Google viewer exists for a merged split file; the client streams /files/{id}/stream.
+		writeJSON(w, http.StatusOK, map[string]string{"url": "/api/files/" + fileID + "/stream", "split": "true"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
