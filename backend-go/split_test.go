@@ -239,3 +239,154 @@ func TestSplitUploadAndMergedDownload(t *testing.T) {
 		t.Fatalf("stub buckets = %d, want 2", len(stub.buckets))
 	}
 }
+
+// Scenario: 30 GB file with A=1, B=5, C=10, D=15, E=10 GB free. Greedy fills the
+// biggest accounts first and leaves the small ones untouched.
+func TestPlanSplitThirtyGBFiveAccounts(t *testing.T) {
+	app, _, _ := setupSplitEnv(t)
+	var userID string
+	if err := app.DB.QueryRow(`SELECT id FROM users WHERE email='split@example.test'`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	oldBuf, oldMin := splitBufferBytes, splitMinSize
+	splitBufferBytes = 0
+	splitMinSize = 0
+	defer func() { splitBufferBytes = oldBuf; splitMinSize = oldMin }()
+
+	// Free space per the user's scenario (GiB).
+	sizes := map[string]int64{
+		"accA": 1 << 30,
+		"accB": 5 << 30,
+		"accC": 10 << 30,
+		"accD": 15 << 30,
+		"accE": 10 << 30,
+	}
+	for id, free := range sizes {
+		if _, err := app.DB.Exec(`INSERT OR IGNORE INTO connected_accounts (id,user_id,provider,provider_account_id,email,access_token_encrypted,refresh_token_encrypted,token_expires_at,scopes,provider_config_id) VALUES (?,?,?,?,?,?,?,?,?,?)`, id, userID, "google_drive", id, id+"@x.test", app.encrypt("t"), app.encrypt("r"), "2099-01-01T00:00:00Z", "[]", "cfg"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := app.DB.Exec(`INSERT INTO storage_accounts (id,connected_account_id,total_bytes,used_bytes,available_bytes) VALUES (?,?,-1,0,?) ON CONFLICT(connected_account_id) DO UPDATE SET available_bytes=excluded.available_bytes`, "st-"+id, id, free); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 30 GB fits: D then C then E, B and A stay untouched.
+	plans, err := app.planSplit(userID, 30<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 3 {
+		t.Fatalf("expected 3 parts (D,C,E), got %d: %+v", len(plans), plans)
+	}
+	want := []struct {
+		id   string
+		size int64
+	}{
+		{"accD", 15 << 30},
+		{"accC", 10 << 30},
+		{"accE", 5 << 30},
+	}
+	for i, w := range want {
+		if plans[i].AccountID != w.id || plans[i].Size != w.size {
+			t.Fatalf("part %d = %s/%d, want %s/%d", i, plans[i].AccountID, plans[i].Size, w.id, w.size)
+		}
+	}
+}
+
+// Same accounts, 31 GB file: E takes the remaining 6 GB; B and A stay untouched.
+func TestPlanSplitThirtyOneGBFillsNextLargest(t *testing.T) {
+	app, _, _ := setupSplitEnv(t)
+	var userID string
+	if err := app.DB.QueryRow(`SELECT id FROM users WHERE email='split@example.test'`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	oldBuf, oldMin := splitBufferBytes, splitMinSize
+	splitBufferBytes = 0
+	splitMinSize = 0
+	defer func() { splitBufferBytes = oldBuf; splitMinSize = oldMin }()
+
+	sizes := map[string]int64{
+		"accA": 1 << 30,
+		"accB": 5 << 30,
+		"accC": 10 << 30,
+		"accD": 15 << 30,
+		"accE": 10 << 30,
+	}
+	for id, free := range sizes {
+		if _, err := app.DB.Exec(`INSERT OR IGNORE INTO connected_accounts (id,user_id,provider,provider_account_id,email,access_token_encrypted,refresh_token_encrypted,token_expires_at,scopes,provider_config_id) VALUES (?,?,?,?,?,?,?,?,?,?)`, id, userID, "google_drive", id, id+"@x.test", app.encrypt("t"), app.encrypt("r"), "2099-01-01T00:00:00Z", "[]", "cfg"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := app.DB.Exec(`INSERT INTO storage_accounts (id,connected_account_id,total_bytes,used_bytes,available_bytes) VALUES (?,?,-1,0,?) ON CONFLICT(connected_account_id) DO UPDATE SET available_bytes=excluded.available_bytes`, "st-"+id, id, free); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	plans, err := app.planSplit(userID, 31<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 3 {
+		t.Fatalf("expected 3 parts (D,C,E), got %d: %+v", len(plans), plans)
+	}
+	want := []struct {
+		id   string
+		size int64
+	}{
+		{"accD", 15 << 30},
+		{"accC", 10 << 30},
+		{"accE", 6 << 30},
+	}
+	for i, w := range want {
+		if plans[i].AccountID != w.id || plans[i].Size != w.size {
+			t.Fatalf("part %d = %s/%d, want %s/%d", i, plans[i].AccountID, plans[i].Size, w.id, w.size)
+		}
+	}
+}
+
+// With the real 128 MB buffer on, the exact-fit case refuses: 2+3+5 GB minus
+// 3 buffers = 9.625 GB usable < 10 GB.
+func TestPlanSplitExactFitRefusedByBuffer(t *testing.T) {
+	app, _, _ := setupSplitEnv(t)
+	var userID string
+	if err := app.DB.QueryRow(`SELECT id FROM users WHERE email='split@example.test'`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	oldBuf, oldMin := splitBufferBytes, splitMinSize
+	splitBufferBytes = 128 << 20
+	splitMinSize = 0
+	defer func() { splitBufferBytes = oldBuf; splitMinSize = oldMin }()
+
+	sizes := map[string]int64{
+		"accA": 2 << 30,
+		"accB": 3 << 30,
+		"accC": 5 << 30,
+	}
+	for id, free := range sizes {
+		if _, err := app.DB.Exec(`INSERT OR IGNORE INTO connected_accounts (id,user_id,provider,provider_account_id,email,access_token_encrypted,refresh_token_encrypted,token_expires_at,scopes,provider_config_id) VALUES (?,?,?,?,?,?,?,?,?,?)`, id, userID, "google_drive", id, id+"@x.test", app.encrypt("t"), app.encrypt("r"), "2099-01-01T00:00:00Z", "[]", "cfg"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := app.DB.Exec(`INSERT INTO storage_accounts (id,connected_account_id,total_bytes,used_bytes,available_bytes) VALUES (?,?,-1,0,?) ON CONFLICT(connected_account_id) DO UPDATE SET available_bytes=excluded.available_bytes`, "st-"+id, id, free); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if plans, _ := app.planSplit(userID, 10<<30); plans != nil {
+		t.Fatalf("exact fit must refuse (buffer), got %+v", plans)
+	}
+	// 9.6 GiB fits inside the 9.625 GiB usable window.
+	wantSize := int64(9830400) << 10 // 9.6 GiB in KiB-shifted integer math
+	plans, err := app.planSplit(userID, wantSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) < 2 {
+		t.Fatalf("9.6 GiB should split across >=2 parts, got %+v", plans)
+	}
+	var total int64
+	for _, pl := range plans {
+		total += pl.Size
+	}
+	if total != wantSize {
+		t.Fatalf("parts sum %d != %d", total, wantSize)
+	}
+}
